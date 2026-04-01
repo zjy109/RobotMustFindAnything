@@ -384,6 +384,8 @@ class SearchEngine:
         anchors, image_frames = self._encode_anchor_images(anchor_entries)
         search_result = self._send_search_request(language_instruction, anchors, image_frames)
         print("Remote search result:", search_result)
+        if search_result['success'] is not True:
+            raise RuntimeError(f"远端搜索失败: {search_result.get('error_message', '未知错误')}")
 
         localization = self.localize_from_search_result(search_result, anchor_entries=anchor_entries)
         return {"search_result": search_result, "localization": localization}
@@ -393,12 +395,12 @@ def _build_argparser():
     parser = argparse.ArgumentParser(description="SearchEngine end-to-end test")
     parser.add_argument("anchor_map_dir", type=str, help="ROIMapFixed 保存的 anchor 地图目录")
     parser.add_argument("language_instruction", type=str, help="语言检索指令")
-    parser.add_argument("--server-host", type=str, default="127.0.0.1", help="远端 server IP/hostname")
+    parser.add_argument("--server-host", type=str, default="219.223.200.92", help="远端 server IP/hostname")
     parser.add_argument("--server-port", type=int, default=5555, help="远端 server 端口")
-    parser.add_argument("--fx", type=float, required=True, help="相机内参 fx")
-    parser.add_argument("--fy", type=float, required=True, help="相机内参 fy")
-    parser.add_argument("--cx", type=float, required=True, help="相机内参 cx")
-    parser.add_argument("--cy", type=float, required=True, help="相机内参 cy")
+    parser.add_argument("--fx", type=float, default=525.0, help="相机内参 fx")
+    parser.add_argument("--fy", type=float, default=525.0, help="相机内参 fy")
+    parser.add_argument("--cx", type=float, default=319.5, help="相机内参 cx")
+    parser.add_argument("--cy", type=float, default=239.5, help="相机内参 cy")
     parser.add_argument("--depth-scale", type=float, default=0.001, help="深度缩放，默认毫米转米")
     parser.add_argument(
         "--sam2-model-id",
