@@ -159,7 +159,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <box size="0.09 0.025 0.025"/>
+        <box size="0.025 0.09 0.025"/>
       </geometry>
       <material name="dark_gray">
         <color rgba="0.25 0.25 0.25 1.0"/>
@@ -214,8 +214,8 @@
     <origin xyz="0 0 0" rpy="-1.57079632679 0 -1.57079632679"/>
   </joint>
 
-  <!-- MID-360 approximate mount -->
-  <link name="mid360_link">
+  <!-- 3D lidar mount -->
+  <link name="lidar_link">
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="0.265"/>
@@ -229,7 +229,7 @@
       <geometry>
         <cylinder radius="0.0325" length="0.06"/>
       </geometry>
-      <material name="mid360_gray">
+      <material name="lidar_gray">
         <color rgba="0.35 0.35 0.35 1.0"/>
       </material>
     </visual>
@@ -242,20 +242,20 @@
     </collision>
   </link>
 
-  <joint name="mid360_joint" type="fixed">
+  <joint name="lidar_joint" type="fixed">
     <parent link="base_link"/>
-    <child link="mid360_link"/>
+    <child link="lidar_link"/>
     <origin xyz="0.0 0.0 0.28" rpy="0 0 0"/>
   </joint>
 
-  <link name="mid360_frame"/>
-  <joint name="mid360_frame_joint" type="fixed">
-    <parent link="mid360_link"/>
-    <child link="mid360_frame"/>
+  <link name="lidar_frame"/>
+  <joint name="lidar_frame_joint" type="fixed">
+    <parent link="lidar_link"/>
+    <child link="lidar_frame"/>
     <origin xyz="0 0 0" rpy="0 0 0"/>
   </joint>
 
-  <gazebo reference="mid360_link">
+  <gazebo reference="lidar_link">
     <material>Gazebo/DarkGrey</material>
   </gazebo>
 
@@ -301,7 +301,7 @@
 
   <!-- Gazebo RGBD camera -->
   <gazebo reference="camera_link">
-    <sensor name="rgbd_camera" type="depth">
+    <sensor name="rgbd_sensor" type="depth">
       <always_on>true</always_on>
       <update_rate>30.0</update_rate>
       <visualize>false</visualize>
@@ -321,24 +321,25 @@
 
       <plugin name="gazebo_ros_camera" filename="libgazebo_ros_camera.so">
         <ros>
-          <namespace>/camera</namespace>
-          <remapping>image_raw:=color/image_raw</remapping>
-          <remapping>camera_info:=color/camera_info</remapping>
-          <remapping>depth/image_raw:=depth/image_rect_raw</remapping>
-          <remapping>depth/camera_info:=depth/camera_info</remapping>
-          <remapping>points:=depth/color/points</remapping>
+          <namespace>/</namespace>
+          <remapping>rgbd/image_raw:=rgbd/image_raw</remapping>
+          <remapping>rgbd/camera_info:=rgbd/camera_info</remapping>
+          <remapping>rgbd/depth/image_raw:=rgbd/depth/image_raw</remapping>
+          <remapping>rgbd/depth/camera_info:=rgbd/depth/camera_info</remapping>
+          <remapping>rgbd/points:=rgbd/points</remapping>
         </ros>
 
-        <frame_name>camera_color_optical_frame</frame_name>
+        <camera_name>rgbd</camera_name>
+        <frame_name>camera_depth_optical_frame</frame_name>
         <min_depth>0.1</min_depth>
         <max_depth>8.0</max_depth>
       </plugin>
     </sensor>
   </gazebo>
 
-  <!-- Gazebo MID-360 approximate lidar -->
-  <gazebo reference="mid360_link">
-    <sensor name="mid360_lidar" type="ray">
+  <!-- Gazebo 3D lidar -->
+  <gazebo reference="lidar_link">
+    <sensor name="lidar_sensor" type="ray">
       <always_on>true</always_on>
       <update_rate>10.0</update_rate>
       <visualize>false</visualize>
@@ -370,13 +371,13 @@
         </noise>
       </ray>
 
-      <plugin name="mid360_pointcloud" filename="libgazebo_ros_ray_sensor.so">
+      <plugin name="lidar_pointcloud" filename="libgazebo_ros_ray_sensor.so">
         <ros>
-          <namespace>/livox</namespace>
+          <namespace>/lidar</namespace>
           <remapping>~/out:=points</remapping>
         </ros>
         <output_type>sensor_msgs/PointCloud2</output_type>
-        <frame_name>mid360_frame</frame_name>
+        <frame_name>lidar_frame</frame_name>
       </plugin>
     </sensor>
   </gazebo>
