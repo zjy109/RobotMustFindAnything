@@ -63,10 +63,7 @@ class SearchEngine:
         self.sam2_processor = None
         self.torch = None
 
-        if not self.anchor_map_dir.exists():
-            raise FileNotFoundError(f"anchor 地图目录不存在: {self.anchor_map_dir}")
-        if not self.index_path.exists():
-            raise FileNotFoundError(f"未找到 anchors.json: {self.index_path}")
+        self.anchor_map_dir.mkdir(parents=True, exist_ok=True)
 
         self.index = self._load_index()
         self.context = zmq.Context.instance()
@@ -83,6 +80,8 @@ class SearchEngine:
         return {key: float(camera_intrinsics[key]) for key in required}
 
     def _load_index(self):
+        if not self.index_path.exists():
+            return {"current_anchor_id": None, "anchors": []}
         return json.loads(self.index_path.read_text(encoding="utf-8"))
 
     def _create_socket(self):
@@ -91,6 +90,10 @@ class SearchEngine:
         socket.setsockopt(zmq.SNDTIMEO, self.send_timeout_ms)
         socket.connect(f"tcp://{self.server_host}:{self.server_port}")
         return socket
+
+    def reset_socket(self):
+        self.close()
+        self.socket = self._create_socket()
 
     def close(self):
         if getattr(self, "socket", None) is not None:
@@ -104,6 +107,7 @@ class SearchEngine:
             pass
 
     def _get_anchor_entries(self):
+        self.index = self._load_index()
         entries = []
         for anchor in self.index.get("anchors", []):
             anchor_id = anchor["id"]
@@ -156,8 +160,17 @@ class SearchEngine:
             "anchors": anchors,
         }
         request_frames = [json.dumps(metadata, ensure_ascii=False).encode("utf-8"), *image_frames]
-        self.socket.send_multipart(request_frames)
-        response = self.socket.recv()
+        try:
+            self.socket.send_multipart(request_frames)
+            response = self.socket.recv()
+        except zmq.error.Again as exc:
+            self.reset_socket()
+            raise TimeoutError(
+                f"搜索服务 {self.server_host}:{self.server_port} 在 {self.recv_timeout_ms / 1000.0:.1f}s 内无响应"
+            ) from exc
+        except zmq.ZMQError as exc:
+            self.reset_socket()
+            raise RuntimeError(f"搜索服务通信失败: {exc}") from exc
         return json.loads(response.decode("utf-8"))
 
     def _ensure_sam2_model(self):
