@@ -11,3 +11,4 @@ rofa/vlm_server/result_images/
 rofa/benchmark/**/*.pdf
 rofa/benchmark/office2/
 rofa/roimap_fixed_data/
+rofa/.model_cache/
