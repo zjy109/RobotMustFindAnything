@@ -9,6 +9,7 @@ from main_on_robot import MainOnRobot
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_STREAM_ROOT = SCRIPT_DIR / "benchmark" / "office2"
 DEFAULT_ROIMAP_ROOT = SCRIPT_DIR / "roimap_fixed_data"
+DEFAULT_SAM2_CACHE_DIR = SCRIPT_DIR / ".model_cache" / "facebook--sam2.1-hiera-small"
 
 
 class PosedRGBDStream:
@@ -66,6 +67,9 @@ def _build_argparser():
     parser.add_argument("--cx", type=float, default=319.5, help="相机内参 cx")
     parser.add_argument("--cy", type=float, default=239.5, help="相机内参 cy")
     parser.add_argument("--depth-scale", type=float, default=0.001, help="深度缩放")
+    parser.add_argument("--sam2-cache-dir", type=str, default=str(DEFAULT_SAM2_CACHE_DIR), help="SAM2 本地缓存目录")
+    parser.add_argument("--sam2-device", type=str, default=None, help="SAM2 推理设备，如 cpu/cuda")
+    parser.add_argument("--lazy-load-sam2", action="store_true", help="启动时不预加载 SAM2")
     parser.add_argument("--search-timeout-seconds", type=float, default=10.0, help="搜索服务超时秒数")
     parser.add_argument("--search-hold-seconds", type=float, default=5.0, help="搜索结果停留秒数")
     return parser
@@ -75,6 +79,7 @@ if __name__ == "__main__":
     args = _build_argparser().parse_args()
     stream_root = Path(args.stream_root).expanduser().resolve()
     roimap_root = Path(args.roimap_root).expanduser().resolve()
+    sam2_cache_dir = Path(args.sam2_cache_dir).expanduser().resolve()
 
     robot = MainOnRobot(
         roimap_root=roimap_root,
@@ -87,6 +92,9 @@ if __name__ == "__main__":
             "cy": args.cy,
         },
         depth_scale=args.depth_scale,
+        sam2_cache_dir=sam2_cache_dir,
+        sam2_device=args.sam2_device,
+        preload_search_models=not args.lazy_load_sam2,
         search_timeout_seconds=args.search_timeout_seconds,
         search_hold_seconds=args.search_hold_seconds,
     )

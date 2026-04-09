@@ -32,6 +32,11 @@ class SearchEngine:
       }
     """
 
+    @staticmethod
+    def default_sam2_cache_dir(model_id):
+        cache_name = str(model_id).replace("/", "--")
+        return Path(__file__).resolve().parent.parent / ".model_cache" / cache_name
+
     def __init__(
         self,
         anchor_map_dir,
@@ -55,7 +60,7 @@ class SearchEngine:
         self.send_timeout_ms = int(send_timeout_ms)
         self.depth_scale = float(depth_scale)
         self.sam2_model_id = str(sam2_model_id)
-        self.sam2_cache_dir = Path(sam2_cache_dir) if sam2_cache_dir else self.anchor_map_dir / ".hf_cache"
+        self.sam2_cache_dir = Path(sam2_cache_dir) if sam2_cache_dir else self.default_sam2_cache_dir(self.sam2_model_id)
         self.sam2_device = sam2_device
         self.camera_intrinsics = self._normalize_camera_intrinsics(camera_intrinsics)
 
@@ -203,6 +208,9 @@ class SearchEngine:
             f"SAM2 loaded: model_id={self.sam2_model_id}, device={self.sam2_device}, "
             f"cache_dir={self.sam2_cache_dir}"
         )
+
+    def warmup_models(self):
+        self._ensure_sam2_model()
 
     @staticmethod
     def _clip_bbox(bbox, width, height):
@@ -425,7 +433,7 @@ def _build_argparser():
         "--sam2-cache-dir",
         type=str,
         default=None,
-        help="SAM2 模型本地缓存目录，不传则默认放到 anchor_map_dir/.hf_cache",
+        help="SAM2 模型本地缓存目录，不传则默认放到 rofa/.model_cache/<model-id>",
     )
     parser.add_argument(
         "--sam2-device",
