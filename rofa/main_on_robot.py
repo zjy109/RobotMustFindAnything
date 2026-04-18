@@ -25,10 +25,6 @@ class MainOnRobot:
         server_port=5555,
         camera_intrinsics=None,
         depth_scale=0.001,
-        sam2_model_id="facebook/sam2.1-hiera-small",
-        sam2_cache_dir=None,
-        sam2_device=None,
-        preload_search_models=True,
         search_timeout_seconds=10.0,
         continue_show=True,
         search_hold_seconds=5.0,
@@ -36,7 +32,6 @@ class MainOnRobot:
         query_prompt_fn=None,
     ):
         roimap_root = Path(roimap_root)
-        sam2_cache_dir = Path(sam2_cache_dir) if sam2_cache_dir else SearchEngine.default_sam2_cache_dir(sam2_model_id)
 
         self.roimap = ROIMapFixed(roimap_root)
         self.search_engine = SearchEngine(
@@ -47,19 +42,14 @@ class MainOnRobot:
             send_timeout_ms=int(float(search_timeout_seconds) * 1000),
             camera_intrinsics=camera_intrinsics,
             depth_scale=depth_scale,
-            sam2_model_id=sam2_model_id,
-            sam2_cache_dir=sam2_cache_dir,
-            sam2_device=sam2_device,
         )
 
         self.state = MainOnRobotState.MAPPING
         self.continue_show = bool(continue_show)
-        self.preload_search_models = bool(preload_search_models)
         self.search_timeout_seconds = float(search_timeout_seconds)
         self.search_hold_seconds = float(search_hold_seconds)
         self.enable_visualization = bool(enable_visualization)
         self.query_prompt_fn = query_prompt_fn or input
-        self.sam2_cache_dir = sam2_cache_dir
 
         self.rgb_window_name = "MainOnRobot RGBD"
         self.map_window_name = "MainOnRobot 2D Map"
@@ -72,9 +62,6 @@ class MainOnRobot:
         self.last_query = None
         self.resume_mapping_at = None
         self.quit_requested = False
-
-        if self.preload_search_models:
-            self._preload_search_models()
 
     @staticmethod
     def _normalize_camera_pose(camera_pose):
@@ -91,13 +78,6 @@ class MainOnRobot:
         self.search_engine.close()
         if self.enable_visualization:
             cv2.destroyAllWindows()
-
-    def _preload_search_models(self):
-        print(f"Preloading SAM2 from local cache: {self.sam2_cache_dir}")
-        try:
-            self.search_engine.warmup_models()
-        except Exception as exc:
-            print(f"SAM2 preload failed: {exc}")
 
     def _depth_to_vis(self, depth):
         depth = np.asarray(depth)

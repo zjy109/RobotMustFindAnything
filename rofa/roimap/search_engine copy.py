@@ -1,5 +1,4 @@
 import argparse
-import base64
 import json
 from pathlib import Path
 
@@ -11,71 +10,32 @@ import zmq
 class SearchEngine:
     """
     读取 ROIMapFixed 保存的 anchor 地图，将全部 anchor RGB 图像和语言指令发给远端服务。
-    远端直接返回目标所在 anchor 与 mask；本地仅负责：
-    1. 校验 server 返回数据
-    2. 保存 mask 可视化
-    3. 结合深度图、相机内参和 camera pose 反投影到世界坐标
-    4. 计算目标点云的 AABB
+    远端返回目标所在 anchor 和 2D bbox 后，本地继续：
+    1. 使用 SAM2 + bbox prompt 分割目标 mask
+    2. 结合深度图、相机内参和 camera pose 反投影到世界坐标
+    3. 计算目标点云的 AABB 并打印
 
     请求协议（client -> server）：
     - multipart[0]：UTF-8 JSON metadata
     - multipart[1:]：与 anchors 顺序一致的 JPEG 图片 bytes
 
-    metadata JSON 格式：
-    {
-      "type": "search_request",
-      "instruction": "<str>",
-      "anchors": [
-        {
-          "anchor_id": "<str>",
-          "image_name": "rgb.jpg",
-          "image_format": "jpeg",
-          "height": <int>,
-          "width": <int>
-        }
-      ],
-      "response_format": {
-        "type": "search_result",
-        "mask_encoding": "png_base64",
-        "mask_semantics": "nonzero_is_foreground"
-      }
-    }
-
     响应协议（server -> client）：
-    - UTF-8 JSON 字符串
-    - 顶层必须是 JSON object / Python dict
-
-    推荐且正式支持的 server 返回格式：
-    {
-      "success": true,
-      "anchor_id": "anchor_0003",
-      "image_index": 3,
-      "bbox": [x1, y1, x2, y2],
-      "score": 0.93,
-      "mask": {
-        "encoding": "png_base64",
-        "height": 480,
-        "width": 640,
-        "data": "<base64 encoded PNG bytes>"
+    - UTF-8 JSON 字符串，至少包含：
+      {
+        "anchor_id": "anchor_0003",
+        "bbox": [x1, y1, x2, y2]
       }
-    }
-
-    字段要求：
-    - success：bool。若为 false，必须额外返回 error_message: str
-    - anchor_id：str。与 image_index 至少提供一个
-    - image_index：int。0-based，下标对应本次请求中的 anchors 顺序
-    - bbox：长度为 4 的数组，格式为 [x1, y1, x2, y2]，像素坐标，xyxy；可选
-    - mask.encoding：当前约定为 "png_base64"
-    - mask.height / mask.width：int，必须与对应 anchor 的 RGB/Depth 分辨率一致
-    - mask.data：str，base64 编码后的单通道 PNG bytes；像素值 0 表示背景，非 0 表示前景
-
-    兼容格式（只作为调试保底，不建议 server 正式使用）：
-    - mask 直接是二维数组 / 二维 list，元素可以是 bool、0/1、0~255
-    - mask = {"encoding": "array", "data": [[...], [...]]}
+    也兼容：
+      {
+        "image_index": 3,
+        "bbox": [x1, y1, x2, y2]
+      }
     """
 
-    MASK_FILE_NAME = "remote_mask.png"
-    MASK_OVERLAY_FILE_NAME = "remote_mask_overlay.png"
+    @staticmethod
+    def default_sam2_cache_dir(model_id):
+        cache_name = str(model_id).replace("/", "--")
+        return Path(__file__).resolve().parent.parent / ".model_cache" / cache_name
 
     def __init__(
         self,
@@ -87,6 +47,9 @@ class SearchEngine:
         send_timeout_ms=60000,
         camera_intrinsics=None,
         depth_scale=0.001,
+        sam2_model_id="facebook/sam2.1-hiera-small",
+        sam2_cache_dir=None,
+        sam2_device=None,
     ):
         self.anchor_map_dir = Path(anchor_map_dir)
         self.index_path = self.anchor_map_dir / "anchors.json"
@@ -96,7 +59,14 @@ class SearchEngine:
         self.recv_timeout_ms = int(recv_timeout_ms)
         self.send_timeout_ms = int(send_timeout_ms)
         self.depth_scale = float(depth_scale)
+        self.sam2_model_id = str(sam2_model_id)
+        self.sam2_cache_dir = Path(sam2_cache_dir) if sam2_cache_dir else self.default_sam2_cache_dir(self.sam2_model_id)
+        self.sam2_device = sam2_device
         self.camera_intrinsics = self._normalize_camera_intrinsics(camera_intrinsics)
+
+        self.sam2_model = None
+        self.sam2_processor = None
+        self.torch = None
 
         self.anchor_map_dir.mkdir(parents=True, exist_ok=True)
 
@@ -183,16 +153,7 @@ class SearchEngine:
             if not ok:
                 raise ValueError(f"无法编码 anchor RGB 图片: {entry['rgb_path']}")
 
-            height, width = image.shape[:2]
-            anchors.append(
-                {
-                    "anchor_id": entry["anchor_id"],
-                    "image_name": "rgb.jpg",
-                    "image_format": "jpeg",
-                    "height": int(height),
-                    "width": int(width),
-                }
-            )
+            anchors.append({"anchor_id": entry["anchor_id"], "image_name": "rgb.jpg"})
             image_frames.append(encoded.tobytes())
 
         return anchors, image_frames
@@ -202,11 +163,6 @@ class SearchEngine:
             "type": "search_request",
             "instruction": language_instruction,
             "anchors": anchors,
-            "response_format": {
-                "type": "search_result",
-                "mask_encoding": "png_base64",
-                "mask_semantics": "nonzero_is_foreground",
-            },
         }
         request_frames = [json.dumps(metadata, ensure_ascii=False).encode("utf-8"), *image_frames]
         try:
@@ -220,15 +176,41 @@ class SearchEngine:
         except zmq.ZMQError as exc:
             self.reset_socket()
             raise RuntimeError(f"搜索服务通信失败: {exc}") from exc
+        return json.loads(response.decode("utf-8"))
+
+    def _ensure_sam2_model(self):
+        if self.sam2_model is not None and self.sam2_processor is not None:
+            return
 
         try:
-            search_result = json.loads(response.decode("utf-8"))
-        except Exception as exc:
-            raise ValueError("server 返回不是合法的 UTF-8 JSON 字符串") from exc
+            import torch
+            from transformers import Sam2Model, Sam2Processor
+        except ImportError as exc:
+            raise RuntimeError(
+                "SAM2 依赖未安装。请先安装 torch、transformers、accelerate、huggingface_hub、pillow。"
+            ) from exc
 
-        if not isinstance(search_result, dict):
-            raise TypeError(f"server 返回顶层必须是 JSON object/dict，实际为: {type(search_result).__name__}")
-        return search_result
+        self.torch = torch
+        device = self.sam2_device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.sam2_cache_dir.mkdir(parents=True, exist_ok=True)
+
+        self.sam2_model = Sam2Model.from_pretrained(
+            self.sam2_model_id,
+            cache_dir=str(self.sam2_cache_dir),
+        ).to(device)
+        self.sam2_model.eval()
+        self.sam2_processor = Sam2Processor.from_pretrained(
+            self.sam2_model_id,
+            cache_dir=str(self.sam2_cache_dir),
+        )
+        self.sam2_device = device
+        print(
+            f"SAM2 loaded: model_id={self.sam2_model_id}, device={self.sam2_device}, "
+            f"cache_dir={self.sam2_cache_dir}"
+        )
+
+    def warmup_models(self):
+        self._ensure_sam2_model()
 
     @staticmethod
     def _clip_bbox(bbox, width, height):
@@ -239,89 +221,69 @@ class SearchEngine:
         y1 = max(0, min(y1, height - 1))
         x2 = max(0, min(x2, width - 1))
         y2 = max(0, min(y2, height - 1))
-        if x2 < x1 or y2 < y1:
+        if x2 <= x1 or y2 <= y1:
             raise ValueError(f"bbox 无效，裁剪后结果为 {[x1, y1, x2, y2]}")
         return [x1, y1, x2, y2]
 
     @staticmethod
-    def _normalize_mask(mask_array, expected_shape=None):
-        mask_array = np.asarray(mask_array)
+    def _extract_best_mask(mask_output, iou_scores=None):
+        mask_array = np.asarray(mask_output)
 
-        if mask_array.ndim == 3:
-            if mask_array.shape[2] == 1:
-                mask_array = mask_array[:, :, 0]
-            else:
-                mask_array = np.any(mask_array > 0, axis=2)
+        if mask_array.ndim == 2:
+            return mask_array.astype(bool)
 
-        if mask_array.ndim != 2:
-            raise ValueError(f"mask 必须是二维数组，实际 shape={mask_array.shape}")
+        if mask_array.ndim == 4:
+            if mask_array.shape[0] != 1:
+                raise ValueError(f"当前仅支持单图单目标分割，mask shape={mask_array.shape}")
+            mask_array = mask_array[0]
 
-        mask = mask_array.astype(np.float32) > 0
-        if expected_shape is not None and tuple(mask.shape) != tuple(expected_shape):
-            raise ValueError(f"mask 尺寸不匹配，期望 {expected_shape}，实际 {mask.shape}")
-        return mask
+        if mask_array.ndim != 3:
+            raise ValueError(f"无法解析 SAM2 mask 输出，shape={mask_array.shape}")
 
-    @classmethod
-    def _decode_mask_payload(cls, mask_payload, expected_shape=None):
-        if isinstance(mask_payload, dict):
-            encoding = mask_payload.get("encoding")
+        if iou_scores is not None:
+            score_array = np.asarray(iou_scores)
+            while score_array.ndim > 1 and score_array.shape[0] == 1:
+                score_array = score_array[0]
+            best_index = int(np.argmax(score_array))
+        else:
+            best_index = 0
 
-            if encoding == "png_base64":
-                if "data" not in mask_payload:
-                    raise KeyError("mask.data 缺失")
-                encoded_bytes = base64.b64decode(mask_payload["data"])
-                image_array = np.frombuffer(encoded_bytes, dtype=np.uint8)
-                decoded = cv2.imdecode(image_array, cv2.IMREAD_UNCHANGED)
-                if decoded is None:
-                    raise ValueError("mask.data 不是合法的 PNG bytes")
+        return mask_array[best_index].astype(bool)
 
-                mask = cls._normalize_mask(decoded, expected_shape=expected_shape)
+    def _segment_with_sam2(self, rgb_image_bgr, bbox):
+        self._ensure_sam2_model()
 
-                height = mask_payload.get("height")
-                width = mask_payload.get("width")
-                if height is not None and int(height) != int(mask.shape[0]):
-                    raise ValueError(f"mask.height 与解码结果不一致: {height} vs {mask.shape[0]}")
-                if width is not None and int(width) != int(mask.shape[1]):
-                    raise ValueError(f"mask.width 与解码结果不一致: {width} vs {mask.shape[1]}")
-                return mask
+        rgb_image = cv2.cvtColor(rgb_image_bgr, cv2.COLOR_BGR2RGB)
+        height, width = rgb_image.shape[:2]
+        bbox = self._clip_bbox(bbox, width, height)
 
-            if encoding == "array":
-                if "data" not in mask_payload:
-                    raise KeyError("mask.data 缺失")
-                return cls._normalize_mask(mask_payload["data"], expected_shape=expected_shape)
+        inputs = self.sam2_processor(
+            images=rgb_image,
+            input_boxes=[[bbox]],
+            return_tensors="pt",
+        ).to(self.sam2_device)
 
-            if "data" in mask_payload and encoding is None:
-                return cls._normalize_mask(mask_payload["data"], expected_shape=expected_shape)
+        with self.torch.no_grad():
+            outputs = self.sam2_model(**inputs, multimask_output=False)
 
-            raise ValueError(
-                "当前仅支持 mask.encoding 为 'png_base64' 或 'array'，"
-                f"实际收到: {encoding!r}"
-            )
-
-        if isinstance(mask_payload, list):
-            return cls._normalize_mask(mask_payload, expected_shape=expected_shape)
-
-        raise TypeError(
-            "mask 字段格式错误；期望 dict 或二维 list。"
-            f"实际类型: {type(mask_payload).__name__}"
+        processed_masks = self.sam2_processor.post_process_masks(
+            outputs.pred_masks.cpu(),
+            inputs["original_sizes"],
         )
+        mask = self._extract_best_mask(
+            processed_masks[0],
+            outputs.iou_scores.cpu().numpy() if hasattr(outputs, "iou_scores") else None,
+        )
+        return mask, bbox
 
     @staticmethod
-    def _bbox_from_mask(mask):
-        ys, xs = np.nonzero(mask)
-        if len(xs) == 0:
-            raise ValueError("server 返回的 mask 为空，无法计算 bbox")
-        return [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
-
-    @classmethod
-    def _save_mask_visualization(cls, anchor_dir, rgb_image_bgr, mask, bbox):
+    def _save_mask_visualization(anchor_dir, rgb_image_bgr, mask, bbox):
         overlay = rgb_image_bgr.copy()
         overlay[mask] = (0.4 * overlay[mask] + 0.6 * np.array([0, 255, 0])).astype(np.uint8)
-        if bbox is not None:
-            x1, y1, x2, y2 = bbox
-            cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 0, 255), 2)
-        cv2.imwrite(str(anchor_dir / cls.MASK_OVERLAY_FILE_NAME), overlay)
-        cv2.imwrite(str(anchor_dir / cls.MASK_FILE_NAME), mask.astype(np.uint8) * 255)
+        x1, y1, x2, y2 = bbox
+        cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 0, 255), 2)
+        cv2.imwrite(str(anchor_dir / "sam2_mask_overlay.png"), overlay)
+        cv2.imwrite(str(anchor_dir / "sam2_mask.png"), (mask.astype(np.uint8) * 255))
 
     def _mask_to_world_points(self, mask, depth_image, camera_pose):
         if self.camera_intrinsics is None:
@@ -387,14 +349,10 @@ class SearchEngine:
             raise KeyError(f"server 返回中缺少 anchor_id 或 image_index: {search_result}")
         if anchor_id not in anchor_by_id:
             raise KeyError(f"server 返回的 anchor_id 不存在于本地地图中: {anchor_id}")
+        if "bbox" not in search_result:
+            raise KeyError(f"server 返回中缺少 bbox: {search_result}")
 
-        mask_payload = search_result.get("mask")
-        if mask_payload is None and "segmentation_mask" in search_result:
-            mask_payload = search_result["segmentation_mask"]
-        if mask_payload is None:
-            raise KeyError(f"server 返回中缺少 mask: {search_result}")
-
-        return anchor_by_id[anchor_id], search_result.get("bbox"), mask_payload
+        return anchor_by_id[anchor_id], search_result["bbox"]
 
     def _load_anchor_observation(self, anchor_entry):
         rgb_image = cv2.imread(str(anchor_entry["rgb_path"]), cv2.IMREAD_COLOR)
@@ -412,18 +370,10 @@ class SearchEngine:
 
     def localize_from_search_result(self, search_result, anchor_entries=None):
         anchor_entries = anchor_entries or self._get_anchor_entries()
-        anchor_entry, bbox, mask_payload = self._resolve_search_target(search_result, anchor_entries)
+        anchor_entry, bbox = self._resolve_search_target(search_result, anchor_entries)
         rgb_image, depth_image, camera_pose = self._load_anchor_observation(anchor_entry)
 
-        expected_shape = rgb_image.shape[:2]
-        mask = self._decode_mask_payload(mask_payload, expected_shape=expected_shape)
-        if not mask.any():
-            raise ValueError("server 返回的 mask 为空，无法执行 3D 定位")
-
-        if bbox is None:
-            bbox = self._bbox_from_mask(mask)
-        clipped_bbox = self._clip_bbox(bbox, rgb_image.shape[1], rgb_image.shape[0])
-
+        mask, clipped_bbox = self._segment_with_sam2(rgb_image, bbox)
         self._save_mask_visualization(anchor_entry["anchor_dir"], rgb_image, mask, clipped_bbox)
 
         points_world = self._mask_to_world_points(mask, depth_image, camera_pose)
@@ -438,11 +388,10 @@ class SearchEngine:
             "anchor_id": anchor_entry["anchor_id"],
             "bbox": clipped_bbox,
             "mask_num_pixels": int(mask.sum()),
-            "mask_shape": [int(mask.shape[0]), int(mask.shape[1])],
             "points_world": points_world,
             "aabb": aabb,
-            "mask_path": str(anchor_entry["anchor_dir"] / self.MASK_FILE_NAME),
-            "mask_overlay_path": str(anchor_entry["anchor_dir"] / self.MASK_OVERLAY_FILE_NAME),
+            "mask_path": str(anchor_entry["anchor_dir"] / "sam2_mask.png"),
+            "mask_overlay_path": str(anchor_entry["anchor_dir"] / "sam2_mask_overlay.png"),
         }
 
     def search_by_language_instruction(self, language_instruction: str):
@@ -456,8 +405,7 @@ class SearchEngine:
         anchors, image_frames = self._encode_anchor_images(anchor_entries)
         search_result = self._send_search_request(language_instruction, anchors, image_frames)
         print("Remote search result:", search_result)
-
-        if search_result.get("success") is not True:
+        if search_result['success'] is not True:
             raise RuntimeError(f"远端搜索失败: {search_result.get('error_message', '未知错误')}")
 
         localization = self.localize_from_search_result(search_result, anchor_entries=anchor_entries)
@@ -465,7 +413,7 @@ class SearchEngine:
 
 
 def _build_argparser():
-    parser = argparse.ArgumentParser(description="SearchEngine end-to-end test (server returns mask)")
+    parser = argparse.ArgumentParser(description="SearchEngine end-to-end test")
     parser.add_argument("anchor_map_dir", type=str, help="ROIMapFixed 保存的 anchor 地图目录")
     parser.add_argument("language_instruction", type=str, help="语言检索指令")
     parser.add_argument("--server-host", type=str, default="219.223.200.92", help="远端 server IP/hostname")
@@ -475,6 +423,24 @@ def _build_argparser():
     parser.add_argument("--cx", type=float, default=319.5, help="相机内参 cx")
     parser.add_argument("--cy", type=float, default=239.5, help="相机内参 cy")
     parser.add_argument("--depth-scale", type=float, default=0.001, help="深度缩放，默认毫米转米")
+    parser.add_argument(
+        "--sam2-model-id",
+        type=str,
+        default="facebook/sam2.1-hiera-small",
+        help="Hugging Face 上的 SAM2 模型 ID",
+    )
+    parser.add_argument(
+        "--sam2-cache-dir",
+        type=str,
+        default=None,
+        help="SAM2 模型本地缓存目录，不传则默认放到 rofa/.model_cache/<model-id>",
+    )
+    parser.add_argument(
+        "--sam2-device",
+        type=str,
+        default=None,
+        help="SAM2 推理设备，默认自动选择 cuda/cpu",
+    )
     return parser
 
 
@@ -492,6 +458,9 @@ if __name__ == "__main__":
             "cy": args.cy,
         },
         depth_scale=args.depth_scale,
+        sam2_model_id=args.sam2_model_id,
+        sam2_cache_dir=args.sam2_cache_dir,
+        sam2_device=args.sam2_device,
     )
 
     try:
