@@ -76,6 +76,7 @@ class SearchEngine:
 
     MASK_FILE_NAME = "remote_mask.png"
     MASK_OVERLAY_FILE_NAME = "remote_mask_overlay.png"
+    SNAPSHOT_PRIORITY = ("last", "first", None)
 
     def __init__(
         self,
@@ -147,27 +148,45 @@ class SearchEngine:
         for anchor in self.index.get("anchors", []):
             anchor_id = anchor["id"]
             anchor_dir = self.anchor_map_dir / anchor_id
-            rgb_path = anchor_dir / "rgb.png"
-            depth_path = anchor_dir / "depth.png"
-            camera_pose_path = anchor_dir / "camera_pose.npy"
-
-            if not rgb_path.exists():
-                raise FileNotFoundError(f"anchor 缺少 RGB 图片: {rgb_path}")
-            if not depth_path.exists():
-                raise FileNotFoundError(f"anchor 缺少深度图: {depth_path}")
-            if not camera_pose_path.exists():
-                raise FileNotFoundError(f"anchor 缺少 camera pose: {camera_pose_path}")
+            snapshot_dir, rgb_path, depth_path, camera_pose_path = self._resolve_anchor_files(anchor_dir)
 
             entries.append(
                 {
                     "anchor_id": anchor_id,
                     "anchor_dir": anchor_dir,
+                    "snapshot_dir": snapshot_dir,
                     "rgb_path": rgb_path,
                     "depth_path": depth_path,
                     "camera_pose_path": camera_pose_path,
                 }
             )
         return entries
+
+    def _resolve_anchor_files(self, anchor_dir):
+        missing_by_candidate = []
+        for snapshot_name in self.SNAPSHOT_PRIORITY:
+            snapshot_dir = anchor_dir if snapshot_name is None else anchor_dir / snapshot_name
+            rgb_path = snapshot_dir / "rgb.png"
+            depth_path = snapshot_dir / "depth.png"
+            camera_pose_path = snapshot_dir / "camera_pose.npy"
+            required_paths = (
+                ("RGB 图片", rgb_path),
+                ("深度图", depth_path),
+                ("camera pose", camera_pose_path),
+            )
+            missing = [f"{label}: {path}" for label, path in required_paths if not path.exists()]
+            if not missing:
+                return snapshot_dir, rgb_path, depth_path, camera_pose_path
+            if snapshot_dir.exists():
+                missing_by_candidate.append((snapshot_dir, missing))
+
+        if missing_by_candidate:
+            snapshot_dir, missing = missing_by_candidate[0]
+            raise FileNotFoundError(f"anchor 快照不完整: {snapshot_dir} | 缺少 {', '.join(missing)}")
+
+        raise FileNotFoundError(
+            f"anchor 不存在可用快照: {anchor_dir}，期望优先检查 {anchor_dir / 'last'}、{anchor_dir / 'first'} 或旧格式根目录"
+        )
 
     def _encode_anchor_images(self, anchor_entries):
         anchors = []

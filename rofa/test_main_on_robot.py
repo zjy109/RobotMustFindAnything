@@ -1,14 +1,134 @@
 import argparse
+import json
+import tempfile
+import unittest
 from pathlib import Path
 
 import cv2
 import numpy as np
 
 from main_on_robot import MainOnRobot
+from roimap.roimap_fixed import ROIMapFixed
+from roimap.search_engine import SearchEngine
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_STREAM_ROOT = SCRIPT_DIR / "benchmark" / "office2"
 DEFAULT_ROIMAP_ROOT = SCRIPT_DIR / "roimap_fixed_data"
+
+
+def _make_camera_pose(x, y, yaw_deg):
+    yaw = np.deg2rad(float(yaw_deg))
+    pose = np.eye(4, dtype=np.float32)
+    pose[0, 0] = np.cos(yaw)
+    pose[0, 1] = -np.sin(yaw)
+    pose[1, 0] = np.sin(yaw)
+    pose[1, 1] = np.cos(yaw)
+    pose[0, 3] = float(x)
+    pose[1, 3] = float(y)
+    return pose
+
+
+def _make_posed_rgbd(frame_id, rgb_value, depth_value, x=0.0, y=0.0, yaw_deg=0.0):
+    rgb = np.full((4, 5, 3), int(rgb_value), dtype=np.uint8)
+    depth = np.full((4, 5), int(depth_value), dtype=np.uint16)
+    return {
+        "FrameId": frame_id,
+        "RGB": rgb,
+        "Depth": depth,
+        "CameraPose": _make_camera_pose(x, y, yaw_deg),
+    }
+
+
+class _DummySocket:
+    def close(self, linger=0):
+        return None
+
+
+class _TestSearchEngine(SearchEngine):
+    def _create_socket(self):
+        return _DummySocket()
+
+
+class TestAnchorStorage(unittest.TestCase):
+    def test_roimap_anchor_keeps_first_and_updates_last(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            roimap_root = Path(tmp_dir) / "roimap"
+            roimap = ROIMapFixed(roimap_root)
+            first_rgbd = _make_posed_rgbd("first", rgb_value=11, depth_value=101, x=1.0, y=2.0, yaw_deg=0.0)
+            first_pose2d = roimap.camera_pose_to_pose2d(first_rgbd["CameraPose"])
+            anchor = roimap.set_anchor(first_rgbd, first_pose2d)
+
+            anchor_dir = roimap_root / anchor["id"]
+            first_dir = anchor_dir / "first"
+            last_dir = anchor_dir / "last"
+
+            self.assertTrue(first_dir.exists())
+            self.assertFalse(last_dir.exists())
+
+            refreshed_rgbd = _make_posed_rgbd("latest", rgb_value=77, depth_value=909, x=1.02, y=2.01, yaw_deg=8.0)
+            refreshed_pose2d = roimap.camera_pose_to_pose2d(refreshed_rgbd["CameraPose"])
+            refreshed = roimap.refresh_anchor(anchor["id"], refreshed_rgbd, refreshed_pose2d)
+
+            self.assertIsNotNone(refreshed)
+            self.assertTrue(last_dir.exists())
+
+            first_rgb = cv2.imread(str(first_dir / "rgb.png"), cv2.IMREAD_COLOR)
+            last_rgb = cv2.imread(str(last_dir / "rgb.png"), cv2.IMREAD_COLOR)
+            self.assertEqual(int(first_rgb[0, 0, 0]), 11)
+            self.assertEqual(int(last_rgb[0, 0, 0]), 77)
+
+            first_depth = cv2.imread(str(first_dir / "depth.png"), cv2.IMREAD_UNCHANGED)
+            last_depth = cv2.imread(str(last_dir / "depth.png"), cv2.IMREAD_UNCHANGED)
+            self.assertEqual(int(first_depth[0, 0]), 101)
+            self.assertEqual(int(last_depth[0, 0]), 909)
+
+            np.testing.assert_allclose(np.load(first_dir / "camera_pose.npy"), first_rgbd["CameraPose"])
+            np.testing.assert_allclose(np.load(last_dir / "camera_pose.npy"), refreshed_rgbd["CameraPose"])
+
+            stored_first_pose2d = json.loads((first_dir / "pose2d.json").read_text(encoding="utf-8"))
+            stored_last_pose2d = json.loads((last_dir / "pose2d.json").read_text(encoding="utf-8"))
+            self.assertEqual(stored_first_pose2d["yaw"], first_pose2d["yaw"])
+            self.assertEqual(stored_last_pose2d["yaw"], refreshed_pose2d["yaw"])
+
+    def test_search_engine_prefers_last_then_first_then_legacy(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            roimap_root = Path(tmp_dir) / "roimap"
+            roimap = ROIMapFixed(roimap_root)
+
+            latest_anchor = roimap.set_anchor(
+                _make_posed_rgbd("a0", rgb_value=10, depth_value=100, x=0.0, y=0.0, yaw_deg=0.0)
+            )
+            roimap.refresh_anchor(
+                latest_anchor["id"],
+                _make_posed_rgbd("a0_new", rgb_value=20, depth_value=200, x=0.02, y=0.01, yaw_deg=5.0),
+            )
+
+            first_only_anchor = roimap.set_anchor(
+                _make_posed_rgbd("a1", rgb_value=30, depth_value=300, x=1.0, y=0.0, yaw_deg=0.0)
+            )
+
+            legacy_anchor_id = "anchor_legacy"
+            legacy_anchor_dir = roimap_root / legacy_anchor_id
+            legacy_anchor_dir.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(legacy_anchor_dir / "rgb.png"), np.full((3, 4, 3), 40, dtype=np.uint8))
+            cv2.imwrite(str(legacy_anchor_dir / "depth.png"), np.full((3, 4), 400, dtype=np.uint16))
+            np.save(legacy_anchor_dir / "camera_pose.npy", _make_camera_pose(2.0, 0.0, 0.0))
+            roimap.index["anchors"].append({"id": legacy_anchor_id, "x": 2.0, "y": 0.0, "yaw": 0.0})
+            roimap._save_index()
+
+            engine = _TestSearchEngine(anchor_map_dir=roimap_root)
+            entries = {entry["anchor_id"]: entry for entry in engine._get_anchor_entries()}
+
+            self.assertEqual(entries[latest_anchor["id"]]["snapshot_dir"].name, "last")
+            self.assertEqual(entries[first_only_anchor["id"]]["snapshot_dir"].name, "first")
+            self.assertEqual(entries[legacy_anchor_id]["snapshot_dir"], roimap_root / legacy_anchor_id)
+
+            latest_rgb = cv2.imread(str(entries[latest_anchor["id"]]["rgb_path"]), cv2.IMREAD_COLOR)
+            first_rgb = cv2.imread(str(entries[first_only_anchor["id"]]["rgb_path"]), cv2.IMREAD_COLOR)
+            legacy_rgb = cv2.imread(str(entries[legacy_anchor_id]["rgb_path"]), cv2.IMREAD_COLOR)
+            self.assertEqual(int(latest_rgb[0, 0, 0]), 20)
+            self.assertEqual(int(first_rgb[0, 0, 0]), 30)
+            self.assertEqual(int(legacy_rgb[0, 0, 0]), 40)
 
 
 class PosedRGBDStream:

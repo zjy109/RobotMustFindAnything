@@ -6,6 +6,9 @@ import numpy as np
 
 
 class ROIMapFixed:
+    FIRST_DIR_NAME = "first"
+    LAST_DIR_NAME = "last"
+
     def __init__(self, root, xy_thresh=0.1, yaw_thresh_deg=10.0):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -39,24 +42,30 @@ class ROIMapFixed:
     def _anchor_dir(self, anchor_id):
         return self.root / anchor_id
 
-    def _write_anchor_rgbd(self, anchor_id, posed_rgbd):
-        anchor_dir = self._anchor_dir(anchor_id)
+    def _anchor_snapshot_dir(self, anchor_id, snapshot_name):
+        return self._anchor_dir(anchor_id) / snapshot_name
+
+    def _write_anchor_rgbd(self, anchor_id, posed_rgbd, snapshot_name):
+        anchor_dir = self._anchor_snapshot_dir(anchor_id, snapshot_name)
         anchor_dir.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(anchor_dir / "rgb.png"), cv2.cvtColor(posed_rgbd["RGB"], cv2.COLOR_RGB2BGR))
         cv2.imwrite(str(anchor_dir / "depth.png"), posed_rgbd["Depth"])
 
-    def _write_anchor_pose(self, anchor_id, camera_pose, pose2d):
-        anchor_dir = self._anchor_dir(anchor_id)
+    def _write_anchor_pose(self, anchor_id, camera_pose, pose2d, snapshot_name):
+        anchor_dir = self._anchor_snapshot_dir(anchor_id, snapshot_name)
         anchor_dir.mkdir(parents=True, exist_ok=True)
         np.save(anchor_dir / "camera_pose.npy", camera_pose)
         (anchor_dir / "pose2d.json").write_text(json.dumps(pose2d, indent=2), encoding="utf-8")
+
+    def _write_anchor_snapshot(self, anchor_id, posed_rgbd, pose2d, snapshot_name):
+        self._write_anchor_rgbd(anchor_id, posed_rgbd, snapshot_name)
+        self._write_anchor_pose(anchor_id, posed_rgbd["CameraPose"], pose2d, snapshot_name)
 
     def set_anchor(self, posed_rgbd, pose2d=None):
         pose2d = pose2d or self.camera_pose_to_pose2d(posed_rgbd["CameraPose"])
         anchor_id = f"anchor_{len(self.index['anchors']):04d}"
         anchor = {"id": anchor_id, **pose2d}
-        self._write_anchor_rgbd(anchor_id, posed_rgbd)
-        self._write_anchor_pose(anchor_id, posed_rgbd["CameraPose"], pose2d)
+        self._write_anchor_snapshot(anchor_id, posed_rgbd, pose2d, self.FIRST_DIR_NAME)
         self.index["anchors"].append(anchor)
         self.index["current_anchor_id"] = anchor_id
         self._save_index()
@@ -81,11 +90,12 @@ class ROIMapFixed:
                 matches.append({"anchor": anchor, "xy": xy, "yaw_deg": yaw})
         return matches
 
-    def refresh_anchor(self, anchor_id, posed_rgbd):
+    def refresh_anchor(self, anchor_id, posed_rgbd, pose2d=None):
+        pose2d = pose2d or self.camera_pose_to_pose2d(posed_rgbd["CameraPose"])
         for anchor in self.index["anchors"]:
             if anchor["id"] != anchor_id:
                 continue
-            self._write_anchor_rgbd(anchor_id, posed_rgbd)
+            self._write_anchor_snapshot(anchor_id, posed_rgbd, pose2d, self.LAST_DIR_NAME)
             return anchor
         return None
 
@@ -94,5 +104,5 @@ class ROIMapFixed:
         matches = self.find_close_anchors(posed_rgbd["CameraPose"], pose2d)
         refreshed = []
         for match in matches:
-            refreshed.append(self.refresh_anchor(match["anchor"]["id"], posed_rgbd))
+            refreshed.append(self.refresh_anchor(match["anchor"]["id"], posed_rgbd, pose2d))
         return [anchor for anchor in refreshed if anchor is not None], matches
