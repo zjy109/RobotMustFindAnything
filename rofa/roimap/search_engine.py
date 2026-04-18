@@ -48,6 +48,7 @@ class SearchEngine:
     推荐且正式支持的 server 返回格式：
     {
       "success": true,
+      "found": true,
       "anchor_id": "anchor_0003",
       "image_index": 3,
       "bbox": [x1, y1, x2, y2],
@@ -62,12 +63,14 @@ class SearchEngine:
 
     字段要求：
     - success：bool。若为 false，必须额外返回 error_message: str
+    - found：bool。表示检索是否命中目标；success=true 只代表服务执行成功
     - anchor_id：str。与 image_index 至少提供一个
     - image_index：int。0-based，下标对应本次请求中的 anchors 顺序
     - bbox：长度为 4 的数组，格式为 [x1, y1, x2, y2]，像素坐标，xyxy；可选
     - mask.encoding：当前约定为 "png_base64"
     - mask.height / mask.width：int，必须与对应 anchor 的 RGB/Depth 分辨率一致
     - mask.data：str，base64 编码后的单通道 PNG bytes；像素值 0 表示背景，非 0 表示前景
+    - 当 found=false 时，不应再返回 anchor_id / image_index / bbox / mask；可选返回 message 或 error_message 说明原因
 
     兼容格式（只作为调试保底，不建议 server 正式使用）：
     - mask 直接是二维数组 / 二维 list，元素可以是 bool、0/1、0~255
@@ -478,6 +481,12 @@ class SearchEngine:
 
         if search_result.get("success") is not True:
             raise RuntimeError(f"远端搜索失败: {search_result.get('error_message', '未知错误')}")
+        if "found" not in search_result:
+            raise KeyError(f"server 返回中缺少 found: {search_result}")
+        if not isinstance(search_result["found"], bool):
+            raise TypeError(f"server 返回的 found 必须是 bool，实际为: {type(search_result['found']).__name__}")
+        if not search_result["found"]:
+            raise LookupError(f"远端搜索成功，但未找到目标: {search_result.get('message', 'no match')}")
 
         localization = self.localize_from_search_result(search_result, anchor_entries=anchor_entries)
         return {"search_result": search_result, "localization": localization}
