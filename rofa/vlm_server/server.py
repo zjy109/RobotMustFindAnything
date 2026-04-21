@@ -272,6 +272,46 @@ class VLMSearchServer:
             f"SAM2 loaded: model_id={self.sam2_model_id}, device={self.sam2_device}, "
             f"cache_dir={self.sam2_cache_dir}"
         )
+
+        # ====== 预热 SAM2 模型 (Warm-up) ======
+        # 使用随机生成的图片进行一次完整推理，触发 CUDA 显存分配和内核初始化
+        # 这将显著降低第一次真实网络请求的延迟
+        logger.info("Starting SAM2 model warm-up...")
+        try:
+            # 1. 生成一张随机的彩色图片 (640x480 RGB 格式) 和一个任意的 BBox
+            dummy_image = np.random.randint(0, 255, (640, 480, 3), dtype=np.uint8)
+            dummy_bbox = [50, 50, 200, 200]
+
+            # 2. 模拟 Processor 处理
+            inputs = self.sam2_processor(
+                images=dummy_image,
+                input_boxes=[[[dummy_bbox[0], dummy_bbox[1], dummy_bbox[2], dummy_bbox[3]]]],
+                return_tensors="pt",
+            )
+            
+            # 3. 将 Tensors 移动到对应设备 (GPU/CPU)
+            inputs = {k: v.to(self.sam2_device) for k, v in inputs.items()}
+
+            # 4. 执行无梯度前向推理
+            with torch.no_grad():
+                outputs = self.sam2_model(**inputs)
+
+            # 5. 执行一次后处理逻辑，确保整个 Pipeline 都被跑通
+            # 使用 getattr 或 hasattr 兼容部分 transformers 版本中 original_sizes 返回 list 的情况
+            original_sizes = inputs["original_sizes"]
+            if hasattr(original_sizes, "cpu"):
+                original_sizes = original_sizes.cpu()
+                
+            _ = self.sam2_processor.post_process_masks(
+                outputs.pred_masks.cpu(),
+                original_sizes,
+            )
+            
+            logger.info("SAM2 model warm-up completed successfully. Ready for inference.")
+            
+        except Exception as e:
+            # 加上 try-except 以防万一预热失败（比如版本兼容性小问题）导致整个 Server 无法启动
+            logger.warning(f"SAM2 warm-up skipped or failed: {e}. The first request might be slightly slower.")
         
         # 初始化 ZMQ - Server 端监听所有接口
         self.context = zmq.Context()
