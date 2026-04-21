@@ -2,7 +2,6 @@
 VLM Search Server
 接收客户端搜索请求，使用 RynnBrain 模型进行物体检测和定位
 """
-import base64
 import json
 import logging
 import os
@@ -20,7 +19,7 @@ import torch
 import zmq
 from PIL import Image
 
-from transformers import AutoModelForImageTextToText, AutoProcessor, Sam2Model, Sam2Processor
+from transformers import AutoModelForImageTextToText, AutoProcessor
 # ============ GPU 配置辅助函数 ============
 def setup_cuda_devices(cuda_devices: str = "0") -> None:
     """设置可见的 CUDA 设备
@@ -192,9 +191,6 @@ class VLMSearchServer:
         device: str = "auto",
         cuda_devices: str = "0",
         save_results: bool = False,
-        sam2_model_id: str = "facebook/sam2.1-hiera-small",
-        sam2_cache_dir: Optional[str] = None,
-        sam2_device: Optional[str] = None,
     ):
         """
         初始化 VLM 搜索服务器
@@ -205,9 +201,7 @@ class VLMSearchServer:
             device: 推理设备 (auto/cuda/cpu)
             cuda_devices: 可见的 CUDA 设备 ID (默认: "0")
             save_results: 是否保存检测结果（启用后在 result_images 下创建目录）
-            sam2_model_id: SAM2 模型 ID (默认: facebook/sam2.1-hiera-small)
-            sam2_cache_dir: SAM2 模型缓存目录（可选，默认使用 .model_cache/<model_id>）
-            sam2_device: SAM2 推理设备（可选，默认使用 cuda 如果可用）
+            save_dir: 检测结果保存目录（可选，如果不指定则使用默认的 result_images）
         """
         # 设置 CUDA 设备（在模型加载之前）
         setup_cuda_devices(cuda_devices)
@@ -251,27 +245,6 @@ class VLMSearchServer:
         )
         self.processor = AutoProcessor.from_pretrained(model_path)
         logger.info("Model loaded successfully")
-        
-        # 初始化 SAM2 模型
-        self.sam2_model_id = str(sam2_model_id)
-        self.sam2_cache_dir = Path(sam2_cache_dir) if sam2_cache_dir else self.default_sam2_cache_dir(self.sam2_model_id)
-        self.sam2_device = sam2_device or ("cuda" if torch.cuda.is_available() else "cpu")
-        
-        logger.info(f"Loading SAM2 model: {self.sam2_model_id}")
-        self.sam2_cache_dir.mkdir(parents=True, exist_ok=True)
-        self.sam2_model = Sam2Model.from_pretrained(
-            self.sam2_model_id,
-            cache_dir=str(self.sam2_cache_dir),
-        ).to(self.sam2_device)
-        self.sam2_model.eval()
-        self.sam2_processor = Sam2Processor.from_pretrained(
-            self.sam2_model_id,
-            cache_dir=str(self.sam2_cache_dir),
-        )
-        logger.info(
-            f"SAM2 loaded: model_id={self.sam2_model_id}, device={self.sam2_device}, "
-            f"cache_dir={self.sam2_cache_dir}"
-        )
         
         # 初始化 ZMQ - Server 端监听所有接口
         self.context = zmq.Context()
@@ -456,66 +429,6 @@ class VLMSearchServer:
             logger.warning(f"Image {image_index}: Object found but bbox extraction failed")
             return {"found": False, "bbox_norm": None}
     
-    @staticmethod
-    def default_sam2_cache_dir(model_id: str) -> Path:
-        """返回 SAM2 模型的默认缓存目录"""
-        cache_name = str(model_id).replace("/", "--")
-        return Path(__file__).resolve().parent.parent / ".model_cache" / cache_name
-
-    def _segment_with_sam2(self, image: Image.Image, bbox_pixel: List[int]) -> Optional[Dict]:
-        """使用 SAM2 根据 bbox 生成分割 mask
-        
-        Args:
-            image: PIL Image 对象（RGB）
-            bbox_pixel: 像素坐标 bbox [x1, y1, x2, y2]
-            
-        Returns:
-            mask payload dict (png_base64 编码)，失败返回 None
-        """
-        try:
-            x1, y1, x2, y2 = bbox_pixel
-            inputs = self.sam2_processor(
-                images=image,
-                input_boxes=[[[x1, y1, x2, y2]]],
-                return_tensors="pt",
-            )
-            inputs = {k: v.to(self.sam2_device) for k, v in inputs.items()}
-
-            with torch.no_grad():
-                outputs = self.sam2_model(**inputs)
-
-            masks = self.sam2_processor.post_process_masks(
-                outputs.pred_masks.cpu(),
-                inputs["original_sizes"].cpu(),
-            )
-
-            # masks[0]: [num_objects, num_masks_per_object, H, W]
-            # 根据 IOU 分数选最优 mask
-            if hasattr(outputs, "iou_scores") and outputs.iou_scores is not None:
-                best_idx = int(outputs.iou_scores[0, 0].argmax().item())
-            else:
-                best_idx = 0
-
-            mask_tensor = masks[0][0, best_idx]  # [H, W] bool tensor
-            mask_np = mask_tensor.numpy().astype(np.uint8) * 255  # [H, W] uint8
-
-            _, buf = cv2.imencode(".png", mask_np)
-            mask_b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
-
-            logger.info(
-                f"SAM2 segmentation succeeded: mask_shape={mask_np.shape}, "
-                f"foreground_pixels={int((mask_np > 0).sum())}"
-            )
-            return {
-                "encoding": "png_base64",
-                "height": int(mask_np.shape[0]),
-                "width": int(mask_np.shape[1]),
-                "data": mask_b64,
-            }
-        except Exception as e:
-            logger.error(f"SAM2 segmentation failed: {e}", exc_info=True)
-            return None
-
     def _process_remaining_images_background(
         self,
         images: List[Image.Image],
@@ -720,15 +633,10 @@ class VLMSearchServer:
                 bbox_pixel = denormalize_bbox(bbox_norm, image_width, image_height)
                 anchor_id = anchors[img_idx]["anchor_id"] if img_idx < len(anchors) else f"anchor_{img_idx:04d}"
                 
-                # 使用 SAM2 生成分割 mask
-                mask_payload = self._segment_with_sam2(image, bbox_pixel)
-                
                 result = {
                     "success": True,
-                    "found": True,
-                    "object_found": True,  # 向后兼容
+                    "object_found": True,
                     "anchor_id": anchor_id,
-                    "image_index": img_idx,
                     "bbox": bbox_pixel,  # 像素坐标
                     "target_object": target_object,
                     "num_images_searched": img_idx + 1,  # 已搜索的图片数
@@ -736,8 +644,6 @@ class VLMSearchServer:
                     "image_width": image_width,
                     "image_height": image_height,
                 }
-                if mask_payload is not None:
-                    result["mask"] = mask_payload
                 
                 # ============ BACKGROUND TASK: 继续处理剩余图片并保存日志 ============
                 should_save = save_results_override if save_results_override is not None else self.save_results
@@ -847,11 +753,9 @@ class VLMSearchServer:
         
         result = {
             "success": True,
-            "found": False,
-            "object_found": False,  # 向后兼容
+            "object_found": False,
             "anchor_id": None,
             "bbox": None,
-            "score": 1.0,  # 预留一个score字段，表示物体置信度（目前都默认为1.0）
             "target_object": target_object,
             "num_images_searched": len(images),
             "total_images_received": len(images),
@@ -1015,9 +919,6 @@ if __name__ == "__main__":
     parser.add_argument("--cuda-devices", type=str, default="0", help="Visible CUDA devices (default: 0). Use '0,1,2' for multiple GPUs")
     parser.add_argument("--save-results", action="store_true", help="Enable saving detection results to result_images/server_*/search_*/ folders")
     parser.add_argument("--num-workers", type=int, default=-1, help="Number of requests to handle (-1 for infinite)")
-    parser.add_argument("--sam2-model-id", type=str, default="facebook/sam2.1-hiera-small", help="SAM2 model ID (default: facebook/sam2.1-hiera-small)")
-    parser.add_argument("--sam2-cache-dir", type=str, default=None, help="SAM2 model cache directory (default: .model_cache/<model_id>)")
-    parser.add_argument("--sam2-device", type=str, default=None, help="SAM2 inference device (default: cuda if available)")
     
     args = parser.parse_args()
     
@@ -1027,9 +928,6 @@ if __name__ == "__main__":
         device=args.device,
         cuda_devices=args.cuda_devices,
         save_results=args.save_results,
-        sam2_model_id=args.sam2_model_id,
-        sam2_cache_dir=args.sam2_cache_dir,
-        sam2_device=args.sam2_device,
     )
     
     server.start(num_workers=args.num_workers)
