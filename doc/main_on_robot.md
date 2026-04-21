@@ -5,3 +5,7 @@ pip install transformers accelerate huggingface_hub pillow
 export HF_ENDPOINT=https://hf-mirror.com
 pip install rospkg catkin_pkg empy defusedxml PyYAML
 ```
+
+```bash
+
+```
