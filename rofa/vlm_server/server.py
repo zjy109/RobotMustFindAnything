@@ -708,14 +708,18 @@ class VLMSearchServer:
         Returns:
             搜索结果字典:
             {
+                "success": true/false,       # 搜索是否成功执行（不代表一定找到物体，除非发生错误）
+                "found": true/false,         # 是否找到物体（与 object_found 向后兼容）
+                "object_found": true/false,  # 是否找到物体
+                "image_index": N,            # 找到时该物体所在图片的索引，未找到时为null
                 "anchor_id": "anchor_0003",  # 找到时使用该anchor的ID，未找到时为null
-                "bbox": [x1, y1, x2, y2],   # 像素坐标（与该张图尺寸相对应），未找到时为null
-                "object_found": true/false,
+                "bbox": [x1, y1, x2, y2],    # 像素坐标（与该张图尺寸相对应），未找到时为null
                 "target_object": "...",
-                "num_images_searched": N,   # 直到找到时已搜索的图片数
-                "total_images_received": N, # 本次请求接收的总图片数
-                "image_width": W,           # 找到物体时该图的宽度
-                "image_height": H           # 找到物体时该图的高度
+                "num_images_searched": N,    # 直到找到时已搜索的图片数
+                "total_images_received": N,  # 本次请求接收的总图片数
+                "image_width": W,            # 找到物体时该图的宽度
+                "image_height": H,           # 找到物体时该图的高度
+                "mask": mask_payload         # 分割 mask（如果生成）
             }
         """
         logger.info(f"Starting search for: {target_object}")
