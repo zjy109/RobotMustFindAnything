@@ -86,6 +86,9 @@ class MainOnRobot:
             "resume_mapping_at": self.resume_mapping_at,
         }
 
+    def snapshot(self):
+        return self._snapshot()
+
     def stop(self):
         self.state = MainOnRobotState.STOPPED
         self.resume_mapping_at = None
