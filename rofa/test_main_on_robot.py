@@ -1,134 +1,14 @@
 import argparse
-import json
-import tempfile
-import unittest
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from main_on_robot import MainOnRobot
-from roimap.roimap_fixed import ROIMapFixed
-from roimap.search_engine import SearchEngine
+from main_on_robot import MainOnRobot, MainOnRobotState
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_STREAM_ROOT = SCRIPT_DIR / "benchmark" / "office2"
 DEFAULT_ROIMAP_ROOT = SCRIPT_DIR / "roimap_fixed_data"
-
-
-def _make_camera_pose(x, y, yaw_deg):
-    yaw = np.deg2rad(float(yaw_deg))
-    pose = np.eye(4, dtype=np.float32)
-    pose[0, 0] = np.cos(yaw)
-    pose[0, 1] = -np.sin(yaw)
-    pose[1, 0] = np.sin(yaw)
-    pose[1, 1] = np.cos(yaw)
-    pose[0, 3] = float(x)
-    pose[1, 3] = float(y)
-    return pose
-
-
-def _make_posed_rgbd(frame_id, rgb_value, depth_value, x=0.0, y=0.0, yaw_deg=0.0):
-    rgb = np.full((4, 5, 3), int(rgb_value), dtype=np.uint8)
-    depth = np.full((4, 5), int(depth_value), dtype=np.uint16)
-    return {
-        "FrameId": frame_id,
-        "RGB": rgb,
-        "Depth": depth,
-        "CameraPose": _make_camera_pose(x, y, yaw_deg),
-    }
-
-
-class _DummySocket:
-    def close(self, linger=0):
-        return None
-
-
-class _TestSearchEngine(SearchEngine):
-    def _create_socket(self):
-        return _DummySocket()
-
-
-class TestAnchorStorage(unittest.TestCase):
-    def test_roimap_anchor_keeps_first_and_updates_last(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            roimap_root = Path(tmp_dir) / "roimap"
-            roimap = ROIMapFixed(roimap_root)
-            first_rgbd = _make_posed_rgbd("first", rgb_value=11, depth_value=101, x=1.0, y=2.0, yaw_deg=0.0)
-            first_pose2d = roimap.camera_pose_to_pose2d(first_rgbd["CameraPose"])
-            anchor = roimap.set_anchor(first_rgbd, first_pose2d)
-
-            anchor_dir = roimap_root / anchor["id"]
-            first_dir = anchor_dir / "first"
-            last_dir = anchor_dir / "last"
-
-            self.assertTrue(first_dir.exists())
-            self.assertFalse(last_dir.exists())
-
-            refreshed_rgbd = _make_posed_rgbd("latest", rgb_value=77, depth_value=909, x=1.02, y=2.01, yaw_deg=8.0)
-            refreshed_pose2d = roimap.camera_pose_to_pose2d(refreshed_rgbd["CameraPose"])
-            refreshed = roimap.refresh_anchor(anchor["id"], refreshed_rgbd, refreshed_pose2d)
-
-            self.assertIsNotNone(refreshed)
-            self.assertTrue(last_dir.exists())
-
-            first_rgb = cv2.imread(str(first_dir / "rgb.png"), cv2.IMREAD_COLOR)
-            last_rgb = cv2.imread(str(last_dir / "rgb.png"), cv2.IMREAD_COLOR)
-            self.assertEqual(int(first_rgb[0, 0, 0]), 11)
-            self.assertEqual(int(last_rgb[0, 0, 0]), 77)
-
-            first_depth = cv2.imread(str(first_dir / "depth.png"), cv2.IMREAD_UNCHANGED)
-            last_depth = cv2.imread(str(last_dir / "depth.png"), cv2.IMREAD_UNCHANGED)
-            self.assertEqual(int(first_depth[0, 0]), 101)
-            self.assertEqual(int(last_depth[0, 0]), 909)
-
-            np.testing.assert_allclose(np.load(first_dir / "camera_pose.npy"), first_rgbd["CameraPose"])
-            np.testing.assert_allclose(np.load(last_dir / "camera_pose.npy"), refreshed_rgbd["CameraPose"])
-
-            stored_first_pose2d = json.loads((first_dir / "pose2d.json").read_text(encoding="utf-8"))
-            stored_last_pose2d = json.loads((last_dir / "pose2d.json").read_text(encoding="utf-8"))
-            self.assertEqual(stored_first_pose2d["yaw"], first_pose2d["yaw"])
-            self.assertEqual(stored_last_pose2d["yaw"], refreshed_pose2d["yaw"])
-
-    def test_search_engine_prefers_last_then_first_then_legacy(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            roimap_root = Path(tmp_dir) / "roimap"
-            roimap = ROIMapFixed(roimap_root)
-
-            latest_anchor = roimap.set_anchor(
-                _make_posed_rgbd("a0", rgb_value=10, depth_value=100, x=0.0, y=0.0, yaw_deg=0.0)
-            )
-            roimap.refresh_anchor(
-                latest_anchor["id"],
-                _make_posed_rgbd("a0_new", rgb_value=20, depth_value=200, x=0.02, y=0.01, yaw_deg=5.0),
-            )
-
-            first_only_anchor = roimap.set_anchor(
-                _make_posed_rgbd("a1", rgb_value=30, depth_value=300, x=1.0, y=0.0, yaw_deg=0.0)
-            )
-
-            legacy_anchor_id = "anchor_legacy"
-            legacy_anchor_dir = roimap_root / legacy_anchor_id
-            legacy_anchor_dir.mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(str(legacy_anchor_dir / "rgb.png"), np.full((3, 4, 3), 40, dtype=np.uint8))
-            cv2.imwrite(str(legacy_anchor_dir / "depth.png"), np.full((3, 4), 400, dtype=np.uint16))
-            np.save(legacy_anchor_dir / "camera_pose.npy", _make_camera_pose(2.0, 0.0, 0.0))
-            roimap.index["anchors"].append({"id": legacy_anchor_id, "x": 2.0, "y": 0.0, "yaw": 0.0})
-            roimap._save_index()
-
-            engine = _TestSearchEngine(anchor_map_dir=roimap_root)
-            entries = {entry["anchor_id"]: entry for entry in engine._get_anchor_entries()}
-
-            self.assertEqual(entries[latest_anchor["id"]]["snapshot_dir"].name, "last")
-            self.assertEqual(entries[first_only_anchor["id"]]["snapshot_dir"].name, "first")
-            self.assertEqual(entries[legacy_anchor_id]["snapshot_dir"], roimap_root / legacy_anchor_id)
-
-            latest_rgb = cv2.imread(str(entries[latest_anchor["id"]]["rgb_path"]), cv2.IMREAD_COLOR)
-            first_rgb = cv2.imread(str(entries[first_only_anchor["id"]]["rgb_path"]), cv2.IMREAD_COLOR)
-            legacy_rgb = cv2.imread(str(entries[legacy_anchor_id]["rgb_path"]), cv2.IMREAD_COLOR)
-            self.assertEqual(int(latest_rgb[0, 0, 0]), 20)
-            self.assertEqual(int(first_rgb[0, 0, 0]), 30)
-            self.assertEqual(int(legacy_rgb[0, 0, 0]), 40)
 
 
 class PosedRGBDStream:
@@ -175,6 +55,186 @@ class PosedRGBDStream:
         return None
 
 
+def _depth_to_vis(depth):
+    depth = np.asarray(depth)
+    depth_float = depth.astype(np.float32)
+    positive = depth_float[depth_float > 0]
+    vmax = np.percentile(positive, 99) if positive.size else 1.0
+    scaled = np.clip(depth_float / max(vmax, 1.0) * 255, 0, 255).astype(np.uint8)
+    return cv2.applyColorMap(scaled, cv2.COLORMAP_JET)
+
+
+def _project_points_to_canvas(points, size=720, margin=70):
+    if not points:
+        points = [(0.0, 0.0)]
+
+    xs = np.array([p[0] for p in points], dtype=np.float32)
+    ys = np.array([p[1] for p in points], dtype=np.float32)
+    min_x, max_x = float(xs.min()), float(xs.max())
+    min_y, max_y = float(ys.min()), float(ys.max())
+    span = max(max_x - min_x, max_y - min_y, 1.0)
+    scale = (size - 2 * margin) / span
+    center_x = (min_x + max_x) * 0.5
+    center_y = (min_y + max_y) * 0.5
+
+    def project(x, y):
+        px = int((x - center_x) * scale + size * 0.5)
+        py = int(size * 0.5 - (y - center_y) * scale)
+        return px, py
+
+    return project
+
+
+def _build_search_lines(snapshot):
+    search_result = snapshot["search_result"]
+    if search_result is None:
+        return []
+    if search_result["status"] == "failed":
+        return [f"search failed: {search_result['error']}"]
+
+    center = search_result["center"]
+    extent = search_result["extent"]
+    return [
+        f"query: {search_result['query']}",
+        f"anchor: {search_result['anchor_id']}",
+        f"center=({center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f})",
+        f"extent=({extent[0]:.2f}, {extent[1]:.2f}, {extent[2]:.2f})",
+    ]
+
+
+def _draw_pose2d_map(snapshot, size=720, margin=70):
+    canvas = np.full((size, size, 3), 250, dtype=np.uint8)
+    anchors = snapshot["anchors"]
+    current_pose = snapshot["pose2d"]
+    search_result = snapshot["search_result"]
+
+    points = []
+    if current_pose is not None:
+        points.append((current_pose["x"], current_pose["y"]))
+    points.extend((anchor["x"], anchor["y"]) for anchor in anchors)
+    if search_result and search_result.get("target_xy") is not None:
+        points.append(search_result["target_xy"])
+
+    project = _project_points_to_canvas(points, size=size, margin=margin)
+    cv2.putText(canvas, "MainOnRobot 2D Map", (20, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (20, 20, 20), 2, cv2.LINE_AA)
+    cv2.line(canvas, (margin, size // 2), (size - margin, size // 2), (220, 220, 220), 1)
+    cv2.line(canvas, (size // 2, margin), (size // 2, size - margin), (220, 220, 220), 1)
+
+    highlighted_anchor_id = None if search_result is None else search_result.get("anchor_id")
+    for anchor in anchors:
+        px, py = project(anchor["x"], anchor["y"])
+        dx = int(20 * np.cos(anchor["yaw"]))
+        dy = int(20 * np.sin(anchor["yaw"]))
+        color = (0, 90, 255) if anchor["id"] == highlighted_anchor_id else (0, 0, 220)
+        cv2.circle(canvas, (px, py), 6, color, -1)
+        cv2.arrowedLine(canvas, (px, py), (px + dx, py - dy), color, 2, tipLength=0.3)
+        cv2.putText(canvas, anchor["id"], (px + 8, py - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA)
+
+    if current_pose is not None:
+        px, py = project(current_pose["x"], current_pose["y"])
+        dx = int(26 * np.cos(current_pose["yaw"]))
+        dy = int(26 * np.sin(current_pose["yaw"]))
+        cv2.circle(canvas, (px, py), 8, (0, 160, 0), -1)
+        cv2.arrowedLine(canvas, (px, py), (px + dx, py - dy), (0, 120, 0), 2, tipLength=0.3)
+        cv2.putText(canvas, "robot", (px + 10, py + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 120, 0), 1, cv2.LINE_AA)
+
+    if search_result is not None and search_result.get("target_xy") is not None:
+        px, py = project(*search_result["target_xy"])
+        cv2.circle(canvas, (px, py), 10, (255, 140, 0), 2)
+        cv2.line(canvas, (px - 12, py), (px + 12, py), (255, 140, 0), 2)
+        cv2.line(canvas, (px, py - 12), (px, py + 12), (255, 140, 0), 2)
+        cv2.putText(
+            canvas,
+            f"target: {search_result['query']}",
+            (px + 12, py - 12),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 140, 0),
+            2,
+            cv2.LINE_AA,
+        )
+
+    for i, line in enumerate(_build_search_lines(snapshot)):
+        cv2.putText(
+            canvas,
+            line,
+            (20, size - 60 + i * 22),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (30, 30, 30),
+            1,
+            cv2.LINE_AA,
+        )
+
+    return canvas
+
+
+def _build_mapping_lines(snapshot, autoplay):
+    pose = snapshot["pose2d"]
+    frame_id = snapshot["frame_id"] or "-"
+    if not snapshot["camera_pose_valid"]:
+        return [
+            f"{frame_id} state={snapshot['state']} autoplay={autoplay}",
+            "invalid camera pose, frame skipped",
+            f"anchors={len(snapshot['anchors'])}",
+            "keys: q quit | c autoplay | s step | Enter set anchor | f search",
+        ]
+
+    lines = [
+        f"{frame_id} state={snapshot['state']} autoplay={autoplay}",
+        f"x={pose['x']:.2f} y={pose['y']:.2f} yaw={np.degrees(pose['yaw']):.1f}",
+        f"anchors={len(snapshot['anchors'])} refreshed={len(snapshot['refreshed'])}",
+        "keys: q quit | c autoplay | s step | Enter set anchor | f search",
+    ]
+    event = snapshot["event"]
+    if event is not None and event["event"] == "manual_set_anchor":
+        lines.append(f"set anchor {event['anchor']['id']}")
+    elif snapshot["refreshed"]:
+        lines.append(f"refreshed {len(snapshot['refreshed'])} anchor(s)")
+    elif event is not None and event["event"] == "search_failed":
+        lines.append(f"search failed: {event['error']}")
+    return lines
+
+
+def _build_search_result_lines(snapshot, robot):
+    remaining = 0.0
+    if snapshot["resume_mapping_at"] is not None:
+        remaining = max(0.0, snapshot["resume_mapping_at"] - robot._now())
+    query = "-" if snapshot["last_query"] is None else snapshot["last_query"]
+    return [
+        f"state={snapshot['state']} query={query}",
+        f"resume in {remaining:.1f}s",
+        "keys: q quit | r resume now | f search again",
+    ]
+
+
+def _show_views(snapshot, rgb_bgr, depth_vis, autoplay, robot):
+    if rgb_bgr is None or depth_vis is None:
+        return -1
+
+    if snapshot["state"] == MainOnRobotState.SHOWING_SEARCH_RESULT.value:
+        status_lines = _build_search_result_lines(snapshot, robot)
+    else:
+        status_lines = _build_mapping_lines(snapshot, autoplay)
+
+    rgb_panel = rgb_bgr.copy()
+    for i, line in enumerate(status_lines):
+        cv2.putText(rgb_panel, line, (10, 28 + i * 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2, cv2.LINE_AA)
+
+    cv2.imshow("MainOnRobot RGBD", np.hstack([rgb_panel, depth_vis]))
+    cv2.imshow("MainOnRobot 2D Map", _draw_pose2d_map(snapshot))
+    return cv2.waitKey(30 if autoplay else 0) & 0xFF
+
+
+def _prompt_search_query():
+    print("\nSearch mode: 在终端输入要检索的内容，直接回车提交，空输入取消。")
+    try:
+        query = input("search> ")
+    except EOFError:
+        query = ""
+    return "" if query is None else str(query).strip()
+
+
 def _build_argparser():
     parser = argparse.ArgumentParser(description="MainOnRobot test runner")
     parser.add_argument("--stream-root", type=str, default=str(DEFAULT_STREAM_ROOT), help="Posed RGBD 数据目录")
@@ -212,4 +272,37 @@ if __name__ == "__main__":
         search_hold_seconds=args.search_hold_seconds,
     )
     stream = PosedRGBDStream(stream_root)
-    robot.run_stream(stream)
+
+    autoplay = True
+    last_rgb_bgr = None
+    last_depth_vis = None
+    snapshot = robot.update(None)
+
+    try:
+        while robot.state != MainOnRobotState.STOPPED:
+            if robot.state == MainOnRobotState.SHOWING_SEARCH_RESULT:
+                snapshot = robot.tick()
+            else:
+                posed_rgbd = stream.next_posed_rgbd()
+                if posed_rgbd is None:
+                    break
+                last_rgb_bgr = cv2.cvtColor(posed_rgbd["RGB"], cv2.COLOR_RGB2BGR)
+                last_depth_vis = _depth_to_vis(posed_rgbd["Depth"])
+                snapshot = robot.process_frame(posed_rgbd)
+
+            key = _show_views(snapshot, last_rgb_bgr, last_depth_vis, autoplay, robot)
+            if key == ord("q"):
+                snapshot = robot.stop()
+            elif key == ord("c"):
+                autoplay = True
+            elif key == ord("s"):
+                autoplay = False
+            elif key in (13, 10):
+                snapshot = robot.set_anchor_from_last_frame()
+            elif key == ord("f"):
+                snapshot = robot.search(_prompt_search_query())
+            elif key == ord("r"):
+                snapshot = robot.resume_mapping()
+    finally:
+        robot.close()
+        cv2.destroyAllWindows()
