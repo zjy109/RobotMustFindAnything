@@ -7,5 +7,5 @@ pip install rospkg catkin_pkg empy defusedxml PyYAML
 ```
 
 ```bash
-
+roslaunch realsense2_camera rs_camera.launch align_depth:=true
 ```

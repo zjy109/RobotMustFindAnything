@@ -100,7 +100,7 @@ def _mapping_loop(robot, sensor, robot_lock, stop_event, sensor_timeout_sec, loo
 def _build_argparser():
     parser = argparse.ArgumentParser(description="Deploy MainOnRobot on a real robot with socket RPC")
     parser.add_argument("--roimap-root", type=str, default="rofa/roimap_fixed_data", help="ROI map 输出目录")
-    parser.add_argument("--server-host", type=str, default="127.0.0.1", help="远端检索服务 host")
+    parser.add_argument("--server-host", type=str, default="219.223.193.175", help="远端检索服务 host")
     parser.add_argument("--server-port", type=int, default=5555, help="远端检索服务端口")
     parser.add_argument("--command-host", type=str, default="0.0.0.0", help="本地命令服务监听 host")
     parser.add_argument("--command-port", type=int, default=6000, help="本地命令服务监听端口")

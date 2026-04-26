@@ -97,10 +97,24 @@ class HeadRealsense:
             return image.reshape(height, width)
         return image.reshape(height, width, channels)
 
+    @staticmethod
+    def _normalize_color_to_rgb(color_image, encoding):
+        encoding = str(encoding).lower()
+        if encoding == "rgb8":
+            return color_image
+        if encoding == "bgr8":
+            return color_image[:, :, ::-1]
+        if encoding == "rgba8":
+            return color_image[:, :, :3]
+        if encoding == "bgra8":
+            return color_image[:, :, :3][:, :, ::-1]
+        raise ValueError("Unsupported color image encoding: {}".format(encoding))
+
     def _sync_callback(self, color_msg, depth_msg, camera_info_msg):
         try:
             color_image = self._image_msg_to_numpy(color_msg)
             depth_image = self._image_msg_to_numpy(depth_msg)
+            color_image = self._normalize_color_to_rgb(color_image, color_msg.encoding)
         except Exception as exc:
             rospy.logerr("Failed to decode RealSense image messages: %s", exc)
             return

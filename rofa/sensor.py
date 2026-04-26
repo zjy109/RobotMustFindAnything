@@ -1,5 +1,6 @@
 import time
 
+import cv2
 import numpy as np
 
 try:
@@ -80,27 +81,51 @@ class Sensor:
         )
         camera_pose = self.get_current_camera_pose(timeout_sec=timeout_sec)
 
-        rgb = bundle["rgb"]
-        if rgb.ndim == 3 and rgb.shape[2] >= 3:
-            rgb = rgb[:, :, :3][:, :, ::-1]
-
         stamp = bundle["stamp"].to_sec()
         frame_id = "{}_{:.6f}".format(self.frame_id_prefix, stamp if stamp > 0 else time.time())
 
         return {
             "FrameId": frame_id,
-            "RGB": np.asarray(rgb, dtype=np.uint8),
+            "RGB": np.asarray(bundle["rgb"], dtype=np.uint8),
             "Depth": np.asarray(bundle["depth"]),
             "CameraPose": np.asarray(camera_pose, dtype=np.float32),
             "CameraInfo": bundle["camera_info"],
         }
 
 
+def _depth_to_vis(depth):
+    depth = np.asarray(depth)
+    depth_float = depth.astype(np.float32)
+    positive = depth_float[depth_float > 0]
+    vmax = np.percentile(positive, 99) if positive.size else 1.0
+    scaled = np.clip(depth_float / max(vmax, 1.0) * 255, 0, 255).astype(np.uint8)
+    return cv2.applyColorMap(scaled, cv2.COLORMAP_JET)
+
+
 if __name__ == "__main__":
     sensor = Sensor()
-    posed_rgbd = sensor.get_current_posed_rgbd(timeout_sec=5.0)
-    print("FrameId:", posed_rgbd["FrameId"])
-    print("RGB shape:", posed_rgbd["RGB"].shape, posed_rgbd["RGB"].dtype)
-    print("Depth shape:", posed_rgbd["Depth"].shape, posed_rgbd["Depth"].dtype)
-    print("CameraPose:")
-    print(posed_rgbd["CameraPose"])
+    print("Showing latest posed RGBD. Press any key in the image window to exit.")
+
+    try:
+        while True:
+            posed_rgbd = sensor.get_current_posed_rgbd(timeout_sec=5.0)
+            rgb_bgr = cv2.cvtColor(posed_rgbd["RGB"], cv2.COLOR_RGB2BGR)
+            depth_vis = _depth_to_vis(posed_rgbd["Depth"])
+
+            cv2.putText(
+                rgb_bgr,
+                posed_rgbd["FrameId"],
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (0, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.imshow("Sensor RGB", rgb_bgr)
+            cv2.imshow("Sensor Depth", depth_vis)
+
+            if cv2.waitKey(1) != -1:
+                break
+    finally:
+        cv2.destroyAllWindows()

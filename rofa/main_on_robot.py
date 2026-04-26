@@ -4,8 +4,8 @@ from pathlib import Path
 
 import numpy as np
 
-from roimap.roimap_fixed import ROIMapFixed
-from roimap.search_engine import SearchEngine
+from .roimap.roimap_fixed import ROIMapFixed
+from .roimap.search_engine import SearchEngine
 
 
 class MainOnRobotState(str, Enum):

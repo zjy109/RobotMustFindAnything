@@ -4,6 +4,7 @@ build
 install
 log
 __pycache__
+*.pyc
 
 rofa/sam3_result/
 rofa/vlm_server/logs/
