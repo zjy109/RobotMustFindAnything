@@ -148,24 +148,35 @@ class SearchEngine:
     def _get_anchor_entries(self):
         self.index = self._load_index()
         entries = []
-        for anchor in self.index.get("anchors", []):
+        for anchor_order, anchor in enumerate(self.index.get("anchors", [])):
             anchor_id = anchor["id"]
             anchor_dir = self.anchor_map_dir / anchor_id
-            snapshot_dir, rgb_path, depth_path, camera_pose_path = self._resolve_anchor_files(anchor_dir)
+            (
+                snapshot_dir,
+                rgb_path,
+                depth_path,
+                camera_pose_path,
+                snapshot_name,
+                snapshot_timestamp,
+            ) = self._resolve_anchor_files(anchor_dir, anchor)
 
             entries.append(
                 {
                     "anchor_id": anchor_id,
                     "anchor_dir": anchor_dir,
                     "snapshot_dir": snapshot_dir,
+                    "snapshot_name": snapshot_name,
+                    "snapshot_timestamp": snapshot_timestamp,
+                    "anchor_order": anchor_order,
                     "rgb_path": rgb_path,
                     "depth_path": depth_path,
                     "camera_pose_path": camera_pose_path,
                 }
             )
+        entries.sort(key=self._anchor_entry_sort_key)
         return entries
 
-    def _resolve_anchor_files(self, anchor_dir):
+    def _resolve_anchor_files(self, anchor_dir, anchor=None):
         missing_by_candidate = []
         for snapshot_name in self.SNAPSHOT_PRIORITY:
             snapshot_dir = anchor_dir if snapshot_name is None else anchor_dir / snapshot_name
@@ -179,7 +190,20 @@ class SearchEngine:
             )
             missing = [f"{label}: {path}" for label, path in required_paths if not path.exists()]
             if not missing:
-                return snapshot_dir, rgb_path, depth_path, camera_pose_path
+                return (
+                    snapshot_dir,
+                    rgb_path,
+                    depth_path,
+                    camera_pose_path,
+                    snapshot_name,
+                    self._resolve_snapshot_timestamp(
+                        anchor,
+                        snapshot_name,
+                        rgb_path,
+                        depth_path,
+                        camera_pose_path,
+                    ),
+                )
             if snapshot_dir.exists():
                 missing_by_candidate.append((snapshot_dir, missing))
 
@@ -190,6 +214,43 @@ class SearchEngine:
         raise FileNotFoundError(
             f"anchor 不存在可用快照: {anchor_dir}，期望优先检查 {anchor_dir / 'last'}、{anchor_dir / 'first'} 或旧格式根目录"
         )
+
+    def _anchor_entry_sort_key(self, entry):
+        priority = self.SNAPSHOT_PRIORITY.index(entry["snapshot_name"])
+        return (priority, -float(entry["snapshot_timestamp"]), int(entry["anchor_order"]))
+
+    @staticmethod
+    def _coerce_timestamp(value):
+        if value is None:
+            return None
+        try:
+            timestamp = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not np.isfinite(timestamp):
+            return None
+        return timestamp
+
+    def _resolve_snapshot_timestamp(self, anchor, snapshot_name, *paths):
+        anchor = anchor or {}
+        timestamp_keys = {
+            "last": ("last_updated_at",),
+            "first": ("first_created_at", "created_at"),
+            None: ("last_updated_at", "first_created_at", "created_at"),
+        }
+
+        for key in timestamp_keys.get(snapshot_name, ()):
+            timestamp = self._coerce_timestamp(anchor.get(key))
+            if timestamp is not None:
+                return timestamp
+
+        mtimes = []
+        for path in paths:
+            if path.exists():
+                mtimes.append(path.stat().st_mtime)
+        if mtimes:
+            return max(float(mtime) for mtime in mtimes)
+        return 0.0
 
     def _encode_anchor_images(self, anchor_entries):
         anchors = []

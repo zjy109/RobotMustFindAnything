@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 
 import cv2
@@ -8,6 +9,8 @@ import numpy as np
 class ROIMapFixed:
     FIRST_DIR_NAME = "first"
     LAST_DIR_NAME = "last"
+    FIRST_CREATED_AT_KEY = "first_created_at"
+    LAST_UPDATED_AT_KEY = "last_updated_at"
 
     def __init__(self, root, xy_thresh=0.1, yaw_thresh_deg=10.0):
         self.root = Path(root)
@@ -61,10 +64,19 @@ class ROIMapFixed:
         self._write_anchor_rgbd(anchor_id, posed_rgbd, snapshot_name)
         self._write_anchor_pose(anchor_id, posed_rgbd["CameraPose"], pose2d, snapshot_name)
 
+    @staticmethod
+    def _current_timestamp():
+        return float(time.time())
+
     def set_anchor(self, posed_rgbd, pose2d=None):
         pose2d = pose2d or self.camera_pose_to_pose2d(posed_rgbd["CameraPose"])
         anchor_id = f"anchor_{len(self.index['anchors']):04d}"
-        anchor = {"id": anchor_id, **pose2d}
+        created_at = self._current_timestamp()
+        anchor = {
+            "id": anchor_id,
+            **pose2d,
+            self.FIRST_CREATED_AT_KEY: created_at,
+        }
         self._write_anchor_snapshot(anchor_id, posed_rgbd, pose2d, self.FIRST_DIR_NAME)
         self.index["anchors"].append(anchor)
         self.index["current_anchor_id"] = anchor_id
@@ -90,12 +102,15 @@ class ROIMapFixed:
                 matches.append({"anchor": anchor, "xy": xy, "yaw_deg": yaw})
         return matches
 
-    def refresh_anchor(self, anchor_id, posed_rgbd, pose2d=None):
+    def refresh_anchor(self, anchor_id, posed_rgbd, pose2d=None, save_index=True):
         pose2d = pose2d or self.camera_pose_to_pose2d(posed_rgbd["CameraPose"])
         for anchor in self.index["anchors"]:
             if anchor["id"] != anchor_id:
                 continue
             self._write_anchor_snapshot(anchor_id, posed_rgbd, pose2d, self.LAST_DIR_NAME)
+            anchor[self.LAST_UPDATED_AT_KEY] = self._current_timestamp()
+            if save_index:
+                self._save_index()
             return anchor
         return None
 
@@ -104,5 +119,7 @@ class ROIMapFixed:
         matches = self.find_close_anchors(posed_rgbd["CameraPose"], pose2d)
         refreshed = []
         for match in matches:
-            refreshed.append(self.refresh_anchor(match["anchor"]["id"], posed_rgbd, pose2d))
+            refreshed.append(self.refresh_anchor(match["anchor"]["id"], posed_rgbd, pose2d, save_index=False))
+        if any(anchor is not None for anchor in refreshed):
+            self._save_index()
         return [anchor for anchor in refreshed if anchor is not None], matches
