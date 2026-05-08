@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import socket
 import tempfile
 import threading
 from pathlib import Path
@@ -82,6 +83,33 @@ def parse_object_bbox(response_str: str) -> Optional[List[int]]:
     if match:
         return [int(match.group(1)), int(match.group(2)), int(match.group(3)), int(match.group(4))]
     return None
+
+
+def get_local_ipv4_addresses() -> List[str]:
+    """获取当前机器可用于局域网访问的 IPv4 地址列表"""
+    addresses = set()
+
+    try:
+        hostname = socket.gethostname()
+        for family, _, _, _, sockaddr in socket.getaddrinfo(hostname, None, socket.AF_INET):
+            if family == socket.AF_INET and sockaddr:
+                ip = sockaddr[0]
+                if ip and not ip.startswith("127."):
+                    addresses.add(ip)
+    except Exception as e:
+        logger.warning(f"Failed to resolve hostname IPv4 addresses: {e}")
+
+    try:
+        udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp_socket.connect(("8.8.8.8", 80))
+        ip = udp_socket.getsockname()[0]
+        if ip and not ip.startswith("127."):
+            addresses.add(ip)
+        udp_socket.close()
+    except Exception as e:
+        logger.warning(f"Failed to probe outbound IPv4 address: {e}")
+
+    return sorted(addresses)
 
 
 def save_detection_results(
@@ -318,6 +346,13 @@ class VLMSearchServer:
         self.socket = self.context.socket(zmq.REP)
         self.socket.bind(f"tcp://*:{self.server_port}")
         logger.info(f"Server listening on tcp://*:{self.server_port}")
+        local_ips = get_local_ipv4_addresses()
+        if local_ips:
+            logger.info("Server IP addresses for robot client:")
+            for ip in local_ips:
+                logger.info(f"  tcp://{ip}:{self.server_port}")
+        else:
+            logger.warning("No non-loopback IPv4 address detected for robot client connection")
     
     def _check_object_existence(self, images: List[Image.Image], target_object: str) -> bool:
         """
