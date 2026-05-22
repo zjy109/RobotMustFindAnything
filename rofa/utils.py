@@ -55,4 +55,11 @@ def build_search_response(snapshot):
         "target_xy": to_builtin(search_result["target_xy"]),
         "center": to_builtin(search_result["center"]),
         "extent": to_builtin(search_result["extent"]),
+        "aabb_min": to_builtin(search_result.get("aabb_min")),
+        "aabb_max": to_builtin(search_result.get("aabb_max")),
+        "aabb": to_builtin(search_result.get("aabb")),
+        "bbox2d": to_builtin(search_result.get("bbox2d")),
+        "mask_overlay_path": search_result.get("mask_overlay_path"),
+        "aabb_overlay_path": search_result.get("aabb_overlay_path"),
+        "aabb_3d_path": search_result.get("aabb_3d_path"),
     }

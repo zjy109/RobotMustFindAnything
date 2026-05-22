@@ -107,6 +107,13 @@ class MainOnRobot:
                 "target_xy": None,
                 "center": None,
                 "extent": None,
+                "aabb_min": None,
+                "aabb_max": None,
+                "aabb": None,
+                "bbox2d": None,
+                "mask_overlay_path": None,
+                "aabb_overlay_path": None,
+                "aabb_3d_path": None,
                 "error": error_message,
                 "raw_output": None,
             }
@@ -115,6 +122,8 @@ class MainOnRobot:
         aabb = localization["aabb"]
         center = tuple(float(v) for v in aabb["center"])
         extent = tuple(float(v) for v in aabb["extent"])
+        aabb_min = tuple(float(v) for v in aabb["min"])
+        aabb_max = tuple(float(v) for v in aabb["max"])
         return {
             "status": "success",
             "query": query,
@@ -122,6 +131,19 @@ class MainOnRobot:
             "target_xy": (center[0], center[1]),
             "center": center,
             "extent": extent,
+            "aabb_min": aabb_min,
+            "aabb_max": aabb_max,
+            "aabb": {
+                "min": list(aabb_min),
+                "max": list(aabb_max),
+                "center": list(center),
+                "extent": list(extent),
+                "num_points": int(aabb.get("num_points", 0)),
+            },
+            "bbox2d": localization.get("bbox"),
+            "mask_overlay_path": localization.get("mask_overlay_path"),
+            "aabb_overlay_path": localization.get("aabb_overlay_path"),
+            "aabb_3d_path": localization.get("aabb_3d_path"),
             "error": None,
             "raw_output": search_output,
         }

@@ -79,6 +79,8 @@ class SearchEngine:
 
     MASK_FILE_NAME = "remote_mask.png"
     MASK_OVERLAY_FILE_NAME = "remote_mask_overlay.png"
+    AABB_OVERLAY_FILE_NAME = "remote_aabb_overlay.png"
+    AABB_3D_FILE_NAME = "remote_aabb_3d.png"
     SNAPSHOT_PRIORITY = ("last", "first", None)
 
     def __init__(
@@ -406,6 +408,196 @@ class SearchEngine:
         cv2.imwrite(str(anchor_dir / cls.MASK_OVERLAY_FILE_NAME), overlay)
         cv2.imwrite(str(anchor_dir / cls.MASK_FILE_NAME), mask.astype(np.uint8) * 255)
 
+    @staticmethod
+    def _aabb_corners(aabb_min, aabb_max):
+        x0, y0, z0 = aabb_min
+        x1, y1, z1 = aabb_max
+        return np.array(
+            [
+                [x0, y0, z0],
+                [x1, y0, z0],
+                [x1, y1, z0],
+                [x0, y1, z0],
+                [x0, y0, z1],
+                [x1, y0, z1],
+                [x1, y1, z1],
+                [x0, y1, z1],
+            ],
+            dtype=np.float32,
+        )
+
+    # 立方体的 12 条边（顶点索引参考 _aabb_corners 顺序）
+    _AABB_EDGES = (
+        (0, 1), (1, 2), (2, 3), (3, 0),  # bottom face (z=z0)
+        (4, 5), (5, 6), (6, 7), (7, 4),  # top face (z=z1)
+        (0, 4), (1, 5), (2, 6), (3, 7),  # vertical edges
+    )
+
+    def _project_world_points_to_image(self, points_world, camera_pose, image_shape):
+        """
+        将世界坐标点投影到给定 anchor 图像的像素坐标。
+        - camera_pose: 4x4，T_world_camera（与 _mask_to_world_points 中使用的方向一致）
+        - image_shape: (H, W)
+        """
+        rotation = camera_pose[:3, :3].astype(np.float32)
+        translation = camera_pose[:3, 3].astype(np.float32)
+        # T_camera_world = inverse(T_world_camera)
+        rotation_inv = rotation.T
+        translation_inv = -rotation_inv @ translation
+
+        points_world = np.asarray(points_world, dtype=np.float32)
+        points_cam = points_world @ rotation_inv.T + translation_inv[None, :]
+
+        fx = self.camera_intrinsics["fx"]
+        fy = self.camera_intrinsics["fy"]
+        cx = self.camera_intrinsics["cx"]
+        cy = self.camera_intrinsics["cy"]
+
+        z_cam = points_cam[:, 2]
+        # 防止除零；z<=0 的点视为不可见
+        eps = 1e-6
+        valid = z_cam > eps
+        u = np.full(points_cam.shape[0], np.nan, dtype=np.float32)
+        v = np.full(points_cam.shape[0], np.nan, dtype=np.float32)
+        z_safe = np.where(valid, z_cam, 1.0)
+        u_all = points_cam[:, 0] * fx / z_safe + cx
+        v_all = points_cam[:, 1] * fy / z_safe + cy
+        u[valid] = u_all[valid]
+        v[valid] = v_all[valid]
+
+        height, width = image_shape[:2]
+        # 单独再返回每个点是否在图像内的标志，便于绘制时做截断
+        in_image = (
+            valid
+            & (u >= 0) & (u < width)
+            & (v >= 0) & (v < height)
+        )
+        return np.stack([u, v], axis=1), valid, in_image
+
+    @classmethod
+    def _save_aabb_2d_overlay(
+        cls, anchor_dir, rgb_image_bgr, aabb_corners_uv, corner_valid, bbox=None
+    ):
+        """
+        把 3D AABB 的 8 个顶点投影后的 12 条边画在 anchor 图像上。
+        无效（z<=0 或 NaN）的顶点对应的边不会绘制。
+        """
+        overlay = rgb_image_bgr.copy()
+
+        # 先画 mask 的 2D bbox 作为参考（红色），便于和 3D AABB 投影对照
+        if bbox is not None:
+            x1, y1, x2, y2 = bbox
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 0, 255), 2)
+
+        # 画 3D AABB 的 12 条边（绿色）
+        height, width = overlay.shape[:2]
+        for i, j in cls._AABB_EDGES:
+            if not (corner_valid[i] and corner_valid[j]):
+                continue
+            pt1 = aabb_corners_uv[i]
+            pt2 = aabb_corners_uv[j]
+            if not (np.all(np.isfinite(pt1)) and np.all(np.isfinite(pt2))):
+                continue
+            # 直接在大画布上裁剪：cv2.line 自身会处理超出图像范围的部分
+            x1i = int(round(float(pt1[0])))
+            y1i = int(round(float(pt1[1])))
+            x2i = int(round(float(pt2[0])))
+            y2i = int(round(float(pt2[1])))
+            cv2.line(overlay, (x1i, y1i), (x2i, y2i), (0, 255, 0), 2, cv2.LINE_AA)
+
+        # 画顶点
+        for i, pt in enumerate(aabb_corners_uv):
+            if not corner_valid[i] or not np.all(np.isfinite(pt)):
+                continue
+            xi = int(round(float(pt[0])))
+            yi = int(round(float(pt[1])))
+            if 0 <= xi < width and 0 <= yi < height:
+                cv2.circle(overlay, (xi, yi), 4, (0, 255, 255), -1, cv2.LINE_AA)
+
+        cv2.putText(
+            overlay,
+            "3D AABB (green) / 2D bbox (red)",
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+        out_path = anchor_dir / cls.AABB_OVERLAY_FILE_NAME
+        cv2.imwrite(str(out_path), overlay)
+        return out_path
+
+    @classmethod
+    def _save_aabb_3d_plot(cls, anchor_dir, points_world, aabb_min, aabb_max):
+        """
+        使用 matplotlib 离线渲染点云 + AABB 立方体线框，保存为 PNG。
+        """
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  仅用于注册 3d 投影
+        except Exception as exc:
+            print(f"[search_engine] matplotlib 不可用，跳过 3D AABB 图: {exc}")
+            return None
+
+        points_world = np.asarray(points_world, dtype=np.float32)
+        aabb_min = np.asarray(aabb_min, dtype=np.float32)
+        aabb_max = np.asarray(aabb_max, dtype=np.float32)
+
+        fig = plt.figure(figsize=(8, 6))
+        ax = fig.add_subplot(111, projection="3d")
+
+        # 点云下采样，避免渲染过慢
+        max_points = 5000
+        if points_world.shape[0] > max_points:
+            idx = np.random.default_rng(0).choice(
+                points_world.shape[0], size=max_points, replace=False
+            )
+            sampled = points_world[idx]
+        else:
+            sampled = points_world
+
+        ax.scatter(
+            sampled[:, 0], sampled[:, 1], sampled[:, 2],
+            s=2, c="tab:blue", alpha=0.5, label="object points",
+        )
+
+        # AABB 立方体线框
+        corners = cls._aabb_corners(aabb_min, aabb_max)
+        for i, j in cls._AABB_EDGES:
+            xs = [corners[i, 0], corners[j, 0]]
+            ys = [corners[i, 1], corners[j, 1]]
+            zs = [corners[i, 2], corners[j, 2]]
+            ax.plot(xs, ys, zs, color="green", linewidth=2)
+
+        ax.set_xlabel("X (world)")
+        ax.set_ylabel("Y (world)")
+        ax.set_zlabel("Z (world)")
+        center = (aabb_min + aabb_max) * 0.5
+        extent = aabb_max - aabb_min
+        ax.set_title(
+            f"World AABB\ncenter=({center[0]:.3f},{center[1]:.3f},{center[2]:.3f})  "
+            f"extent=({extent[0]:.3f},{extent[1]:.3f},{extent[2]:.3f})"
+        )
+
+        # 让坐标轴比例一致
+        max_range = float(extent.max()) if float(extent.max()) > 0 else 1.0
+        mid = center
+        ax.set_xlim(mid[0] - max_range, mid[0] + max_range)
+        ax.set_ylim(mid[1] - max_range, mid[1] + max_range)
+        ax.set_zlim(mid[2] - max_range, mid[2] + max_range)
+
+        ax.legend(loc="upper right")
+        fig.tight_layout()
+
+        out_path = anchor_dir / cls.AABB_3D_FILE_NAME
+        fig.savefig(str(out_path), dpi=120)
+        plt.close(fig)
+        return out_path
+
     def _mask_to_world_points(self, mask, depth_image, camera_pose):
         if self.camera_intrinsics is None:
             raise RuntimeError(
@@ -512,6 +704,37 @@ class SearchEngine:
         points_world = self._mask_to_world_points(mask, depth_image, camera_pose)
         aabb = self._compute_aabb(points_world)
 
+        # 生成 3D AABB 可视化
+        aabb_overlay_path = None
+        aabb_3d_path = None
+        try:
+            corners_world = self._aabb_corners(
+                np.asarray(aabb["min"], dtype=np.float32),
+                np.asarray(aabb["max"], dtype=np.float32),
+            )
+            corners_uv, corner_valid, _ = self._project_world_points_to_image(
+                corners_world, camera_pose, rgb_image.shape
+            )
+            aabb_overlay_path = self._save_aabb_2d_overlay(
+                anchor_entry["anchor_dir"],
+                rgb_image,
+                corners_uv,
+                corner_valid,
+                bbox=clipped_bbox,
+            )
+        except Exception as exc:
+            print(f"[search_engine] 保存 3D AABB 投影叠加图失败: {exc}")
+
+        try:
+            aabb_3d_path = self._save_aabb_3d_plot(
+                anchor_entry["anchor_dir"],
+                points_world,
+                aabb["min"],
+                aabb["max"],
+            )
+        except Exception as exc:
+            print(f"[search_engine] 保存 3D AABB 立体图失败: {exc}")
+
         print(f"Matched anchor: {anchor_entry['anchor_id']}")
         print(f"Segmentation bbox: {clipped_bbox}")
         print(f"Point cloud size: {aabb['num_points']}")
@@ -526,6 +749,8 @@ class SearchEngine:
             "aabb": aabb,
             "mask_path": str(anchor_entry["anchor_dir"] / self.MASK_FILE_NAME),
             "mask_overlay_path": str(anchor_entry["anchor_dir"] / self.MASK_OVERLAY_FILE_NAME),
+            "aabb_overlay_path": str(aabb_overlay_path) if aabb_overlay_path else None,
+            "aabb_3d_path": str(aabb_3d_path) if aabb_3d_path else None,
         }
 
     def search_by_language_instruction(self, language_instruction: str):
