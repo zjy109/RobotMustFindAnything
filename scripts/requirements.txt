@@ -1,0 +1,18 @@
+# RoFA-SemEval scripts dependencies
+#
+# 按阶段分组：可以只装当前阶段需要的部分。
+#
+# ─── 阶段 1 (capture_sample.py) ────────────────────
+pyrealsense2          # RealSense D435 驱动
+numpy<2.0
+opencv-python         # 实时预览 / 图像 I/O
+pypinyin              # 可选；中文类别名 → 拼音 slug
+
+# ─── 阶段 2 (annotate_sample.py) ────────────────────
+# numpy<2.0  (已在阶段 1 列出)
+# opencv-python (已在阶段 1 列出)
+open3d                # 可选但强烈建议；点云去噪 (SOR + DBSCAN)
+matplotlib            # 可选；3D AABB 立体可视化
+
+# ─── 阶段 3 (finalize_dataset.py) ────────────────────
+# numpy<2.0  + opencv-python 即可
