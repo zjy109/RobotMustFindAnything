@@ -35,22 +35,50 @@ scripts/
 
 ## 快速开始
 
-### 1. 安装依赖
+### 1. 创建并激活 conda 环境
 
-机器人本机（采集 + 标注）：
+推荐用一个独立的轻量环境 `rofa-data`，与项目原有的重型 `rofa`（含 SAM3/RynnBrain/ROS2）解耦：
+
 ```bash
-pip install pyrealsense2 "numpy<2.0" opencv-python
-pip install pypinyin     # 可选，让中文类别名转拼音 slug 更友好
-pip install open3d        # 可选但强烈建议，标注阶段去噪用
-pip install matplotlib    # 可选，标注阶段生成 3D AABB 立体图
+conda create -n rofa-data python=3.10 -y
+conda activate rofa-data
 ```
 
-发布（任何机器都行）：
+### 2. 安装依赖
+
+机器人本机（采集 + 标注 + 发布全装）：
+
 ```bash
-pip install "numpy<2.0" opencv-python
+# 基础（必需）
+conda install -y "numpy<2.0"
+pip install opencv-python
+
+# 阶段 1（采集）
+pip install pyrealsense2
+pip install pypinyin                # 中文类别名 → 拼音 slug，强烈建议
+
+# 阶段 2（标注，可选但强烈建议）
+pip install open3d                   # 点云 SOR + DBSCAN 去噪
+pip install matplotlib               # 3D AABB 立体可视化
 ```
 
-### 2. 阶段 1：采集
+或者一键装齐：
+
+```bash
+pip install -r RobotMustFindAnything/scripts/requirements.txt
+```
+
+按角色精简版：
+
+| 角色 | 必需 | 可选 |
+|---|---|---|
+| 采集员（D435 主机） | `numpy<2.0` `opencv-python` `pyrealsense2` | `pypinyin` |
+| 标注员（任意机器） | `numpy<2.0` `opencv-python` | `open3d` `matplotlib` |
+| 数据负责人（发布机） | `numpy<2.0` `opencv-python` | — |
+
+> 若想复用工程原有的 `rofa` 环境而不新建：`conda activate rofa && pip install pypinyin open3d matplotlib pyrealsense2`（其余依赖原 `rofa` 环境已具备）。
+
+### 3. 阶段 1：采集
 
 ```bash
 python scripts/capture_sample.py \
@@ -69,7 +97,7 @@ python scripts/capture_sample.py \
 
 类别表 `raw_capture/classes.json` 由脚本累积维护，包含 id / 英文 slug / 中文名 / aliases / captured_count。
 
-### 3. 阶段 2：标注
+### 4. 阶段 2：标注
 
 ```bash
 python scripts/annotate_sample.py \
@@ -89,7 +117,7 @@ python scripts/annotate_sample.py \
   - **q** 退出
 - 画 mask 过程中：**z** 撤销最近一个顶点，**r** 清空重画
 
-### 4. 阶段 3：发布
+### 5. 阶段 3：发布
 
 ```bash
 # 干跑（只校验、生成报告，不写 dataset/）

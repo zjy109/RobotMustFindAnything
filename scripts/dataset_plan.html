@@ -178,15 +178,16 @@
 <div class="toc">
   <b>目录：</b>
   <a href="#sec-1">1. 流程总览</a>
-  <a href="#sec-2">2. 角色分工</a>
-  <a href="#sec-3">3. 关键决策（v5）</a>
-  <a href="#sec-4">4. 位姿讨论</a>
-  <a href="#sec-5">5. 目录结构</a>
-  <a href="#sec-6">6. 文件格式</a>
-  <a href="#sec-7">7. 标注流程</a>
-  <a href="#sec-8">8. 脚本规划</a>
-  <a href="#sec-9">9. 与现有代码的衔接</a>
-  <a href="#sec-10">10. 待确认事项</a>
+  <a href="#sec-env">2. 环境配置 (Conda)</a>
+  <a href="#sec-2">3. 角色分工</a>
+  <a href="#sec-3">4. 关键决策（v5）</a>
+  <a href="#sec-4">5. 位姿讨论</a>
+  <a href="#sec-5">6. 目录结构</a>
+  <a href="#sec-6">7. 文件格式</a>
+  <a href="#sec-7">8. 标注流程</a>
+  <a href="#sec-8">9. 脚本规划</a>
+  <a href="#sec-9">10. 与现有代码的衔接</a>
+  <a href="#sec-10">11. 待确认事项</a>
 </div>
 
 <!-- ===== 1 流程总览 ===== -->
@@ -230,9 +231,95 @@
   </div>
 </section>
 
-<!-- ===== 2 角色分工 ===== -->
+<!-- ===== 2 环境配置 (Conda) ===== -->
+<section id="sec-env">
+  <h2>2. 环境配置（Conda）</h2>
+
+  <p><b>推荐做法：</b>用 conda 创建一个独立环境 <code>rofa-data</code>，所有依赖装在里面，避免污染系统 Python，也方便随时清空重装。</p>
+
+  <h3>2.1 一键创建环境</h3>
+<pre>conda create -n rofa-data python=3.10 -y
+conda activate rofa-data</pre>
+
+  <h3>2.2 按阶段装依赖</h3>
+
+  <h4>方案 A · 全部装上（推荐，三阶段都能跑）</h4>
+<pre>conda activate rofa-data
+
+# 基础
+conda install -y "numpy&lt;2.0"
+pip install opencv-python
+
+# 阶段 1（采集）
+pip install pyrealsense2
+pip install pypinyin               # 中文类别名 → 拼音 slug
+
+# 阶段 2（标注，可选但强烈建议）
+pip install open3d                  # 点云 SOR + DBSCAN 去噪
+pip install matplotlib              # 3D AABB 立体可视化
+
+# 阶段 3（发布）
+# 仅需 numpy + opencv-python，已包含在基础里</pre>
+
+  <h4>方案 B · 按角色分别装</h4>
+
+  <table>
+    <thead>
+      <tr><th>角色</th><th>必需依赖</th><th>可选依赖</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>采集员（D435 主机）</td>
+        <td><code>numpy&lt;2.0</code>、<code>opencv-python</code>、<code>pyrealsense2</code></td>
+        <td><code>pypinyin</code>（强烈建议）</td>
+      </tr>
+      <tr>
+        <td>标注员（任意机器）</td>
+        <td><code>numpy&lt;2.0</code>、<code>opencv-python</code></td>
+        <td><code>open3d</code>（强烈建议）、<code>matplotlib</code></td>
+      </tr>
+      <tr>
+        <td>数据负责人（发布机）</td>
+        <td><code>numpy&lt;2.0</code>、<code>opencv-python</code></td>
+        <td>—</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>2.3 一键脚本（可复制到终端直接跑）</h3>
+<pre># 创建并激活
+conda create -n rofa-data python=3.10 -y
+conda activate rofa-data
+
+# 装全部依赖（机器人本机）
+pip install -r RobotMustFindAnything/scripts/requirements.txt
+
+# 验证
+python -c "import cv2, numpy, pyrealsense2, pypinyin; print('capture deps ok')"
+python -c "import open3d, matplotlib; print('annotate deps ok')"</pre>
+
+  <h3>2.4 平台说明</h3>
+  <ul>
+    <li><b>RealSense 驱动</b>：<code>pyrealsense2</code> 在 macOS 上没有官方 wheel，需要在 Linux/Windows 机器上跑采集；本仓库已有 D435 工程默认部署在 Linux。</li>
+    <li><b>open3d</b>：Apple Silicon (M1/M2/M3) 的支持有时滞后；如果装失败，annotate 脚本会自动降级到 numpy 兜底（仅做 5σ 过滤），仍可生成 mask + AABB，只是去噪效果略弱。</li>
+    <li><b>matplotlib 缺失</b>：跳过 3D 立体图，2D 投影图与 AABB 数值仍正常输出。</li>
+    <li><b>pypinyin 缺失</b>：中文类别名会回退到 <code>zh_&lt;utf8 hex&gt;</code> 形式作为目录名（仍可跑通流程，但目录名不可读）。</li>
+  </ul>
+
+  <h3>2.5 卸载 / 重置</h3>
+<pre>conda deactivate
+conda remove -n rofa-data --all -y</pre>
+
+  <div class="callout info">
+    <b>项目里已有 conda 环境 <code>rofa</code>：</b>本仓库 <code>README.md</code> 的"环境配置"是为整个 <code>rofa</code>（含 SAM3 + RynnBrain + ROS2）准备的重型环境。
+    <b>本数据集脚本</b>不需要 SAM/LLM/ROS，因此推荐<b>新建一个轻量的 <code>rofa-data</code></b>，避免污染原 <code>rofa</code> 环境。
+    若你确实要复用原 <code>rofa</code>，只需 <code>conda activate rofa</code> 后 <code>pip install -r scripts/requirements.txt</code> 补齐即可。
+  </div>
+</section>
+
+<!-- ===== 3 角色分工 ===== -->
 <section id="sec-2">
-  <h2>2. 角色分工与脚本对照</h2>
+  <h2>3. 角色分工与脚本对照</h2>
   <table>
     <thead>
       <tr>
@@ -275,7 +362,7 @@
 
 <!-- ===== 3 关键决策 ===== -->
 <section id="sec-3">
-  <h2>3. 关键决策（v5 对齐版）</h2>
+  <h2>4. 关键决策（v5 对齐版）</h2>
   <div class="badges">
     <span class="badge ok">三阶段解耦</span>
     <span class="badge ok">单一全集</span>
@@ -326,9 +413,9 @@
 
 <!-- ===== 4 位姿讨论 ===== -->
 <section id="sec-4">
-  <h2>4. 关于"用 dummy 位姿是否影响 benchmark"</h2>
+  <h2>5. 关于"用 dummy 位姿是否影响 benchmark"</h2>
   <p><b>结论：不影响 IoU3D 数值，但需在数据集说明里声明坐标系约定。</b></p>
-  <h3>4.1 数学推导</h3>
+  <h3>5.1 数学推导</h3>
   <ul>
     <li>mask + depth + 内参反投影得到的是 <b>相机坐标系下的点云</b> <code>P_cam</code>。</li>
     <li>世界系点云 <code>P_world = R · P_cam + t</code>，其中 <code>(R, t) = T_world_camera</code>。</li>
@@ -338,7 +425,7 @@
   <div class="callout ok">
     <b>✅ 安全前提：</b>预测端（<code>SearchEngine._mask_to_world_points</code>）也使用 <code>pose=I</code>。本工程已经支持：在 <code>pose.txt</code> 写单位阵，<code>MainOnRobot</code> 直接吃。
   </div>
-  <h3>4.2 这种简化的代价</h3>
+  <h3>5.2 这种简化的代价</h3>
   <ul>
     <li>❌ 失去"多帧融合 / 跨帧检索"能力（每条样本独立，等价于"单帧定位"）。</li>
     <li>❌ 失去大纲 P30 中"语义地图构建模型"在本指标下的实际贡献。</li>
@@ -348,9 +435,9 @@
 
 <!-- ===== 5 目录结构 ===== -->
 <section id="sec-5">
-  <h2>5. 目录结构（raw 池 + 最终数据集）</h2>
+  <h2>6. 目录结构（raw 池 + 最终数据集）</h2>
 
-  <h3>5.1 总体布局</h3>
+  <h3>6.1 总体布局</h3>
 <pre>RoFA-SemEval/
 ├── raw_capture/                    # 采集 + 标注阶段的工作目录（中间产物，不对外发布）
 │   ├── classes.json                # 累积的类别表（采集员动态扩展）
@@ -407,7 +494,7 @@
     </ul>
   </div>
 
-  <h3>5.2 命名规则</h3>
+  <h3>6.2 命名规则</h3>
   <ul>
     <li><b>类别目录</b>：英文 slug（中文输入自动转拼音），同时在 <code>classes.json</code> 保留中文名与所有 alias。</li>
     <li><b>sample_id</b>：<code>{class}_{4位序号}</code>，如 <code>bottle_0023</code>。同类内序号递增、跨类不复用。</li>
@@ -417,9 +504,9 @@
 
 <!-- ===== 6 文件格式 ===== -->
 <section id="sec-6">
-  <h2>6. 文件格式定义</h2>
+  <h2>7. 文件格式定义</h2>
 
-  <h3>6.1 capture_meta.json（采集时由采集脚本写入）</h3>
+  <h3>7.1 capture_meta.json（采集时由采集脚本写入）</h3>
 <pre>{
   "sample_id": "bottle_0023",
   "class_input_raw": "瓶子",       // 采集员输入的原始字符串
@@ -435,7 +522,7 @@
   "depth": { "width": 640, "height": 480, "aligned_to": "color" }
 }</pre>
 
-  <h3>6.2 sample.json（标注后由标注脚本写入，对应阶段 2 产物）</h3>
+  <h3>7.2 sample.json（标注后由标注脚本写入，对应阶段 2 产物）</h3>
 <pre>{
   "sample_id": "bottle_0023",
   "class_id": 2,
@@ -479,7 +566,7 @@
   }
 }</pre>
 
-  <h3>6.3 classes.json（采集时由采集脚本动态维护）</h3>
+  <h3>7.3 classes.json（采集时由采集脚本动态维护）</h3>
 <pre>{
   "version": 1,
   "managed_by": "capture_sample.py",
@@ -506,7 +593,7 @@
     <li><b>captured_count</b>：仅记录"采集"数量，<b>不</b>记录"标注后保留"数量。最终保留数由 finalize 脚本基于 <code>annotated/</code> 目录计算并写入 <code>dataset/classes.json</code>。</li>
   </ul>
 
-  <h3>6.4 dataset.json（finalize 后产出）</h3>
+  <h3>7.4 dataset.json（finalize 后产出）</h3>
 <pre>{
   "name": "RoFA-SemEval",
   "version": "1.0",
@@ -537,7 +624,7 @@
   "created_at": "2026-05-23"
 }</pre>
 
-  <h3>6.5 samples.json（最终全集索引，<b>无 splits</b>）</h3>
+  <h3>7.5 samples.json（最终全集索引，<b>无 splits</b>）</h3>
 <pre>[
   { "sample_id": "bottle_0001", "class_id": 2, "class_name": "bottle",
     "sample_dir": "samples/bottle/bottle_0001" },
@@ -546,7 +633,7 @@
   ...
 ]</pre>
 
-  <h3>6.6 其他文件（与 v4 一致）</h3>
+  <h3>7.6 其他文件（与 v4 一致）</h3>
   <table>
     <thead><tr><th>文件</th><th>内容</th></tr></thead>
     <tbody>
@@ -562,7 +649,7 @@
 
 <!-- ===== 7 标注流程 ===== -->
 <section id="sec-7">
-  <h2>7. 标注员工作流（连通域边界 + 自动填充 + 删减权）</h2>
+  <h2>8. 标注员工作流（连通域边界 + 自动填充 + 删减权）</h2>
   <ol>
     <li>启动 <code>annotate_sample.py</code>，自动跳到下一个 <code>raw_capture/pending/</code> 中未标注样本。</li>
     <li>窗口左侧显示 <code>rgb.jpg</code>，右侧显示深度伪彩色图（辅助判断目标可视性）。</li>
@@ -597,13 +684,13 @@
 
 <!-- ===== 8 脚本规划 ===== -->
 <section id="sec-8">
-  <h2>8. <code>scripts/</code> 脚本规划</h2>
+  <h2>9. <code>scripts/</code> 脚本规划</h2>
 <pre>RobotMustFindAnything/scripts/
 ├── capture_sample.py            # 阶段 1：采集
 ├── annotate_sample.py           # 阶段 2：标注 + 删减
 └── finalize_dataset.py          # 阶段 3：完整性校验 + 发布</pre>
 
-  <h3>8.1 阶段 1 · <code>capture_sample.py</code></h3>
+  <h3>9.1 阶段 1 · <code>capture_sample.py</code></h3>
   <table>
     <thead><tr><th>项</th><th>设计</th></tr></thead>
     <tbody>
@@ -656,7 +743,7 @@ while True:
         break</pre>
   </details>
 
-  <h3>8.2 阶段 2 · <code>annotate_sample.py</code></h3>
+  <h3>9.2 阶段 2 · <code>annotate_sample.py</code></h3>
   <table>
     <thead><tr><th>项</th><th>设计</th></tr></thead>
     <tbody>
@@ -673,10 +760,10 @@ while True:
     </tbody>
   </table>
 
-  <h3>8.3 阶段 3 · <code>finalize_dataset.py</code></h3>
+  <h3>9.3 阶段 3 · <code>finalize_dataset.py</code></h3>
   <p><b>核心定位：</b>把 <code>raw_capture/annotated/</code> 拷贝整理成最终发布数据集。<b>不做主观删减</b>，只兜底文件级完整性。</p>
 
-  <h4>8.3.1 完整性硬性检查（任一不通过 → 写入失败清单，不进入最终数据集）</h4>
+  <h4>9.3.1 完整性硬性检查（任一不通过 → 写入失败清单，不进入最终数据集）</h4>
   <table>
     <thead><tr><th>检查项</th><th>规则</th></tr></thead>
     <tbody>
@@ -691,14 +778,14 @@ while True:
     </tbody>
   </table>
 
-  <h4>8.3.2 拷贝与发布</h4>
+  <h4>9.3.2 拷贝与发布</h4>
   <ul>
     <li>把通过校验的样本目录从 <code>raw_capture/annotated/</code> 拷贝（或硬链接）到 <code>dataset/samples/&lt;class&gt;/&lt;sample_id&gt;/</code>。</li>
     <li>从 <code>raw_capture/classes.json</code> 中过滤出"在最终数据集中至少有 1 条样本的类别"，写入 <code>dataset/classes.json</code>。</li>
     <li>生成 <code>dataset/samples.json</code>（全集扁平索引）和 <code>dataset/dataset.json</code>（含 <code>actual_stats</code>）。</li>
   </ul>
 
-  <h4>8.3.3 报告（不剔除任何东西，只展示事实）</h4>
+  <h4>9.3.3 报告（不剔除任何东西，只展示事实）</h4>
 <pre>{
   "validated_at": "2026-05-23T18:00:00+08:00",
   "totals": {
@@ -737,7 +824,7 @@ while True:
 
 <!-- ===== 9 与现有代码的衔接 ===== -->
 <section id="sec-9">
-  <h2>9. 与现有代码的衔接（零侵入）</h2>
+  <h2>10. 与现有代码的衔接（零侵入）</h2>
   <ul>
     <li>✅ <code>intrinsics.json</code> 字段 <code>{fx, fy, cx, cy}</code> 与 <code>SearchEngine.camera_intrinsics</code> 完全一致；</li>
     <li>✅ <code>depth.png</code> uint16 + <code>depth_scale=0.001</code> 与 <code>MainOnRobot(depth_scale=...)</code> 默认值一致；</li>
@@ -750,15 +837,47 @@ while True:
 
 <!-- ===== 10 待确认事项 ===== -->
 <section id="sec-10">
-  <h2>10. 待你拍板的事项</h2>
-  <ol>
-    <li>RGB 分辨率取 640×480 还是 1280×720？大纲只要求 ≥640×480，但 D435 高分下深度有效区域更小，<b>建议默认 640×480</b>。</li>
-    <li>类别 slug 生成策略：① 中文转拼音（<code>瓶子→pingzi</code>）；② 保留中文做目录名；③ 强制英文输入。<b>建议 ① + 撞名时 _2/_3 后缀</b>。</li>
-    <li>采集时是否额外存原始 ROS bag（备未来语义地图实验）？<b>默认不存</b>。</li>
-    <li>finalize 拷贝 vs 硬链接：默认 <b>硬链接</b>（节省空间，<code>raw_capture/</code> 与 <code>dataset/</code> 同盘时）；<b>跨盘则降级为拷贝</b>。是否接受？</li>
-  </ol>
+  <h2>11. 已落地的默认值</h2>
+  <p>以下选项在脚本中均已采用，命令行参数也保留了覆盖入口：</p>
+  <table>
+    <thead>
+      <tr><th>项</th><th>默认值</th><th>覆盖方式</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>RGB 分辨率</td>
+        <td>640×480 @ 30fps</td>
+        <td><code>capture_sample.py --rgb-w/--rgb-h/--fps</code></td>
+      </tr>
+      <tr>
+        <td>类别 slug</td>
+        <td>中文 → 拼音；撞名追加 <code>_2 / _3 ...</code></td>
+        <td>装 <code>pypinyin</code> 即生效；缺失时 fallback 到 <code>zh_&lt;hex&gt;</code></td>
+      </tr>
+      <tr>
+        <td>位姿</td>
+        <td>4×4 单位阵 (dummy)</td>
+        <td>—（与 <code>SearchEngine</code> pose=I 配套）</td>
+      </tr>
+      <tr>
+        <td>ROS bag 同步录制</td>
+        <td>不录</td>
+        <td>—（如需后续可单独写一个 <code>capture_with_bag.py</code>）</td>
+      </tr>
+      <tr>
+        <td>finalize 拷贝方式</td>
+        <td>硬链接（同盘） / 自动降级拷贝（跨盘）</td>
+        <td><code>_dataset_common.hardlink_or_copy_dir</code> 自动判断</td>
+      </tr>
+      <tr>
+        <td>conda 环境</td>
+        <td><code>rofa-data</code>（轻量）</td>
+        <td>也可复用工程已有的 <code>rofa</code> 环境，详见 §2</td>
+      </tr>
+    </tbody>
+  </table>
   <div class="callout info">
-    <b>下一步：</b>你确认本方案后，按 <code>capture_sample.py → annotate_sample.py → finalize_dataset.py</code> 顺序实现。<b>每个脚本完成后单独提交</b>，便于阶段性验证。
+    <b>下一步建议：</b>在机器人本机激活 <code>rofa-data</code>，先跑 <code>capture_sample.py</code> 抓 5~10 条样本做"通流测试"，确认 RealSense 串流、内参写盘、目录结构都正常，再正式启动大规模采集。
   </div>
 </section>
 
