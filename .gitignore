@@ -5,6 +5,7 @@ install
 log
 __pycache__
 *.pyc
+.DS_Store
 
 rofa/sam3_result/
 rofa/vlm_server/logs/
@@ -13,3 +14,7 @@ rofa/benchmark/**/*.pdf
 rofa/benchmark/office2/
 rofa/roimap_fixed_data/
 rofa/.model_cache/
+
+# 数据集采集中间产物与发布产物（数据本身不入库）
+RoFA-SemEval/
+scripts/RoFA-SemEval/

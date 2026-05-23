@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>RoFA-SemEval 数据集方案 v5</title>
+<style>
+  :root {
+    --c-bg: #f6f8fb;
+    --c-card: #ffffff;
+    --c-border: #e3e8ef;
+    --c-text: #1f2937;
+    --c-muted: #6b7280;
+    --c-accent: #2563eb;
+    --c-accent-soft: #dbeafe;
+    --c-warn-bg: #fff7ed;
+    --c-warn-border: #fdba74;
+    --c-ok-bg: #ecfdf5;
+    --c-ok-border: #6ee7b7;
+    --c-code-bg: #0f172a;
+    --c-code-text: #e2e8f0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--c-bg);
+    color: var(--c-text);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC",
+      "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
+    line-height: 1.65;
+    font-size: 15px;
+  }
+  .container { max-width: 1100px; margin: 0 auto; padding: 32px 28px 80px; }
+
+  header.cover {
+    background: linear-gradient(135deg, #1e40af 0%, #2563eb 60%, #3b82f6 100%);
+    color: #fff;
+    border-radius: 14px;
+    padding: 36px 32px;
+    margin-bottom: 28px;
+    box-shadow: 0 10px 30px rgba(30, 64, 175, 0.18);
+  }
+  header.cover h1 { margin: 0 0 8px; font-size: 26px; letter-spacing: 0.5px; }
+  header.cover .sub { opacity: 0.92; font-size: 14px; }
+  header.cover .meta {
+    margin-top: 18px; display: flex; flex-wrap: wrap;
+    gap: 10px 22px; font-size: 13px; opacity: 0.95;
+  }
+  header.cover .meta b { font-weight: 600; }
+
+  section {
+    background: var(--c-card);
+    border: 1px solid var(--c-border);
+    border-radius: 12px;
+    padding: 22px 26px;
+    margin-bottom: 20px;
+    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
+  }
+  section h2 {
+    margin: 0 0 14px;
+    font-size: 19px;
+    color: #0f172a;
+    border-left: 4px solid var(--c-accent);
+    padding-left: 10px;
+  }
+  section h3 {
+    margin: 18px 0 8px;
+    font-size: 15.5px;
+    color: #1e293b;
+  }
+  section h4 { margin: 14px 0 6px; font-size: 14.5px; color: #334155; }
+  section p { margin: 8px 0; }
+
+  ul, ol { margin: 6px 0 6px 1.2em; padding: 0; }
+  li { margin: 4px 0; }
+
+  table {
+    width: 100%; border-collapse: collapse;
+    margin: 10px 0; font-size: 14px;
+  }
+  th, td {
+    border: 1px solid var(--c-border);
+    padding: 8px 10px;
+    text-align: left; vertical-align: top;
+  }
+  thead th { background: #f1f5f9; font-weight: 600; }
+  td.center { text-align: center; }
+  td.mono, code, pre { font-family: "JetBrains Mono", Menlo, Consolas, monospace; }
+  code {
+    background: #f1f5f9; padding: 1px 6px; border-radius: 4px;
+    font-size: 13px; color: #1d4ed8;
+  }
+  pre {
+    background: var(--c-code-bg); color: var(--c-code-text);
+    padding: 14px 16px; border-radius: 8px;
+    overflow-x: auto; font-size: 13px; line-height: 1.55;
+  }
+
+  .callout {
+    border-left: 4px solid;
+    padding: 12px 16px;
+    border-radius: 6px;
+    margin: 12px 0;
+  }
+  .callout.warn { background: var(--c-warn-bg); border-color: var(--c-warn-border); }
+  .callout.ok   { background: var(--c-ok-bg);   border-color: var(--c-ok-border); }
+  .callout.info { background: var(--c-accent-soft); border-color: var(--c-accent); }
+
+  .badges { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 16px; }
+  .badge {
+    background: #e0e7ff; color: #3730a3;
+    border-radius: 999px; padding: 3px 12px;
+    font-size: 12px; font-weight: 600;
+  }
+  .badge.ok   { background: #dcfce7; color: #166534; }
+  .badge.warn { background: #fee2e2; color: #991b1b; }
+
+  details {
+    background: #f8fafc;
+    border: 1px solid var(--c-border);
+    border-radius: 8px;
+    padding: 8px 14px;
+    margin: 10px 0;
+  }
+  details > summary { cursor: pointer; font-weight: 600; color: #1e293b; }
+
+  .toc {
+    background: #f8fafc;
+    border: 1px dashed var(--c-border);
+    border-radius: 8px;
+    padding: 14px 18px;
+    font-size: 14px;
+  }
+  .toc a { color: var(--c-accent); text-decoration: none; margin-right: 14px; }
+  .toc a:hover { text-decoration: underline; }
+
+  /* 流程图 */
+  .pipeline {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr auto 1fr;
+    gap: 12px;
+    align-items: stretch;
+    margin: 16px 0;
+  }
+  .pipeline .stage {
+    background: #f0f7ff;
+    border: 1px solid #bfdbfe;
+    border-radius: 10px;
+    padding: 14px;
+    font-size: 13px;
+  }
+  .pipeline .stage h4 { margin: 0 0 6px; color: #1e40af; font-size: 14px; }
+  .pipeline .arrow {
+    align-self: center;
+    color: #2563eb;
+    font-size: 24px;
+    font-weight: 700;
+  }
+  @media (max-width: 760px) {
+    .pipeline { grid-template-columns: 1fr; }
+    .pipeline .arrow { transform: rotate(90deg); justify-self: center; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header class="cover">
+  <h1>RoFA-SemEval · 数据集与脚本方案 v5</h1>
+  <div class="sub">面向《指标 4.2 环境语义表达准确率》的本地真实采集方案：采集 / 标注 / 发布 三阶段解耦</div>
+  <div class="meta">
+    <span><b>设备：</b>Intel RealSense D435（仅 RGB-D，无底盘 / 无 SLAM）</span>
+    <span><b>位姿来源：</b>Dummy（单位阵）</span>
+    <span><b>类别：</b>采集时由采集员动态输入</span>
+    <span><b>数据集形态：</b>单一全集（无 train/test 划分）</span>
+  </div>
+</header>
+
+<div class="toc">
+  <b>目录：</b>
+  <a href="#sec-1">1. 流程总览</a>
+  <a href="#sec-2">2. 角色分工</a>
+  <a href="#sec-3">3. 关键决策（v5）</a>
+  <a href="#sec-4">4. 位姿讨论</a>
+  <a href="#sec-5">5. 目录结构</a>
+  <a href="#sec-6">6. 文件格式</a>
+  <a href="#sec-7">7. 标注流程</a>
+  <a href="#sec-8">8. 脚本规划</a>
+  <a href="#sec-9">9. 与现有代码的衔接</a>
+  <a href="#sec-10">10. 待确认事项</a>
+</div>
+
+<!-- ===== 1 流程总览 ===== -->
+<section id="sec-1">
+  <h2>1. 流程总览（三阶段彻底解耦）</h2>
+
+  <div class="pipeline">
+    <div class="stage">
+      <h4>阶段 1 · 采集</h4>
+      <div><b>谁：</b>采集员</div>
+      <div><b>做：</b>输入物品名 + 按空格拍照</div>
+      <div><b>不接触：</b>mask、点云、AABB、相机参数</div>
+      <div><b>产出：</b><code>raw_capture/pending/</code></div>
+    </div>
+    <div class="arrow">→</div>
+    <div class="stage">
+      <h4>阶段 2 · 标注</h4>
+      <div><b>谁：</b>标注员</div>
+      <div><b>做：</b>画 mask + 决定保留/删除</div>
+      <div><b>不接触：</b>硬件、相机内参</div>
+      <div><b>产出：</b>标注+清洗后的 <code>raw_capture/</code></div>
+    </div>
+    <div class="arrow">→</div>
+    <div class="stage">
+      <h4>阶段 3 · 发布</h4>
+      <div><b>谁：</b>数据负责人</div>
+      <div><b>做：</b>完整性校验 + 拷贝整理</div>
+      <div><b>不接触：</b>样本本身的内容判断</div>
+      <div><b>产出：</b><code>dataset/</code> 单一全集</div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <b>核心约定：</b>
+    <ul>
+      <li>每个阶段的人只负责自己那一段，互不依赖；</li>
+      <li>采集员可以一次拍上百条然后离场，<b>不需要等标注员</b>；</li>
+      <li>标注员可以在任意时间打开 raw 池开始标注，<b>不需要采集员在场</b>；</li>
+      <li>最终发布的 <b>只有一个数据集</b>，无 train/test 划分，所有有效样本都是评测样本。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ===== 2 角色分工 ===== -->
+<section id="sec-2">
+  <h2>2. 角色分工与脚本对照</h2>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:14%">阶段</th>
+        <th style="width:14%">角色</th>
+        <th style="width:18%">脚本</th>
+        <th style="width:24%">输入</th>
+        <th>输出</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1 · 采集</td>
+        <td>采集员（懂硬件）</td>
+        <td><code>capture_sample.py</code></td>
+        <td>物品名（中英文）+ 键盘抓拍</td>
+        <td><code>raw_capture/pending/&lt;class&gt;/&lt;sample_id&gt;/</code><br>含 <code>rgb.jpg / depth.png / intrinsics.json / pose.txt</code></td>
+      </tr>
+      <tr>
+        <td>2 · 标注</td>
+        <td>标注员（懂物体）</td>
+        <td><code>annotate_sample.py</code></td>
+        <td><code>raw_capture/pending/</code> 下未标注样本</td>
+        <td>追加 <code>mask.png / points.ply / aabb.json / sample.json / viz_*.png</code><br>删除的样本移到 <code>raw_capture/discarded/</code></td>
+      </tr>
+      <tr>
+        <td>3 · 发布</td>
+        <td>数据负责人</td>
+        <td><code>finalize_dataset.py</code></td>
+        <td><code>raw_capture/</code></td>
+        <td><code>dataset/</code>：含 <code>dataset.json / classes.json / samples.json / samples/</code>。<b>只有一个数据集，没有 splits</b></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout info">
+    <b>权限/工具门槛：</b>采集脚本需要 <code>pyrealsense2</code> 与 D435 驱动；标注脚本只需要 OpenCV + open3d；发布脚本只需要 Python 标准库 + numpy + opencv（用于校验）。三者完全独立，互不阻塞。
+  </div>
+</section>
+
+<!-- ===== 3 关键决策 ===== -->
+<section id="sec-3">
+  <h2>3. 关键决策（v5 对齐版）</h2>
+  <div class="badges">
+    <span class="badge ok">三阶段解耦</span>
+    <span class="badge ok">单一全集</span>
+    <span class="badge ok">扁平按类别</span>
+    <span class="badge warn">位姿=I (dummy)</span>
+    <span class="badge ok">人工画轮廓+填充</span>
+    <span class="badge ok">类别动态输入</span>
+    <span class="badge ok">采集端零约束</span>
+    <span class="badge ok">标注员可删减</span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:18%">维度</th>
+        <th>v4</th>
+        <th>v5 最终</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>采集 vs 标注</td>
+        <td>合并为 1 个流程，由"标注员"在采完之后立即标</td>
+        <td><b>分离为 2 个独立脚本</b>，采集员只拍照、不画 mask</td>
+      </tr>
+      <tr>
+        <td>是否分 train/test</td>
+        <td>有 <code>splits/test.json</code></td>
+        <td><b>不分。仅一个 <code>samples.json</code> 全集索引</b></td>
+      </tr>
+      <tr>
+        <td>样本删减权</td>
+        <td>校验脚本自动剔除（仅文件级）</td>
+        <td><b>标注员可主动删除任何样本（移到 discarded）</b>，发布脚本只做完整性兜底</td>
+      </tr>
+      <tr>
+        <td>raw 池 / 数据集</td>
+        <td>合并在一起</td>
+        <td><b>分离</b>：<code>raw_capture/</code>（中间产物）vs <code>dataset/</code>（最终发布）</td>
+      </tr>
+      <tr>
+        <td>1000 / 20 / 25-75</td>
+        <td>大纲建议刻度，仅作报告</td>
+        <td>同 v4，仅在 <code>dataset_report.json</code> 中对照展示</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ===== 4 位姿讨论 ===== -->
+<section id="sec-4">
+  <h2>4. 关于"用 dummy 位姿是否影响 benchmark"</h2>
+  <p><b>结论：不影响 IoU3D 数值，但需在数据集说明里声明坐标系约定。</b></p>
+  <h3>4.1 数学推导</h3>
+  <ul>
+    <li>mask + depth + 内参反投影得到的是 <b>相机坐标系下的点云</b> <code>P_cam</code>。</li>
+    <li>世界系点云 <code>P_world = R · P_cam + t</code>，其中 <code>(R, t) = T_world_camera</code>。</li>
+    <li>当 <code>T_world_camera = I</code> 时，<code>P_world ≡ P_cam</code>。</li>
+    <li>IoU3D = 体积比，<b>对刚体变换 (R, t) 保不变</b>。GT 与预测都用同一约定（pose=I），AABB IoU 数值不受影响。</li>
+  </ul>
+  <div class="callout ok">
+    <b>✅ 安全前提：</b>预测端（<code>SearchEngine._mask_to_world_points</code>）也使用 <code>pose=I</code>。本工程已经支持：在 <code>pose.txt</code> 写单位阵，<code>MainOnRobot</code> 直接吃。
+  </div>
+  <h3>4.2 这种简化的代价</h3>
+  <ul>
+    <li>❌ 失去"多帧融合 / 跨帧检索"能力（每条样本独立，等价于"单帧定位"）。</li>
+    <li>❌ 失去大纲 P30 中"语义地图构建模型"在本指标下的实际贡献。</li>
+    <li>✅ 但 IoU3D ≥ τ → Accτ 的核心评测不受影响。</li>
+  </ul>
+</section>
+
+<!-- ===== 5 目录结构 ===== -->
+<section id="sec-5">
+  <h2>5. 目录结构（raw 池 + 最终数据集）</h2>
+
+  <h3>5.1 总体布局</h3>
+<pre>RoFA-SemEval/
+├── raw_capture/                    # 采集 + 标注阶段的工作目录（中间产物，不对外发布）
+│   ├── classes.json                # 累积的类别表（采集员动态扩展）
+│   ├── pending/                    # 已采集但未标注 / 未确定保留
+│   │   ├── bottle/
+│   │   │   ├── bottle_0001/
+│   │   │   │   ├── rgb.jpg
+│   │   │   │   ├── depth.png
+│   │   │   │   ├── intrinsics.json
+│   │   │   │   ├── pose.txt
+│   │   │   │   └── capture_meta.json     # 采集时间、采集员、设备序列号等
+│   │   │   ├── bottle_0002/
+│   │   │   └── ...
+│   │   └── wheelchair/
+│   ├── annotated/                  # 已完成标注、决定保留
+│   │   ├── bottle/
+│   │   │   ├── bottle_0001/
+│   │   │   │   ├── rgb.jpg
+│   │   │   │   ├── depth.png
+│   │   │   │   ├── intrinsics.json
+│   │   │   │   ├── pose.txt
+│   │   │   │   ├── mask.png              # 标注产物
+│   │   │   │   ├── points.ply
+│   │   │   │   ├── aabb.json
+│   │   │   │   ├── viz_mask.png
+│   │   │   │   ├── viz_aabb.png
+│   │   │   │   ├── capture_meta.json
+│   │   │   │   └── sample.json           # 含完整元数据
+│   │   │   └── ...
+│   └── discarded/                  # 标注员删除的样本（保留以备追溯）
+│       ├── bottle/
+│       │   └── bottle_0017/
+│       │       ├── (原始文件)
+│       │       └── discard_reason.txt
+│
+└── dataset/                        # 最终发布的数据集（finalize_dataset.py 产出）
+    ├── dataset.json                # 全局元数据 + 实际统计
+    ├── classes.json                # 最终类别表
+    ├── samples.json                # 全集索引（不分 train/test，全部即评测集）
+    ├── samples/                    # 完整样本（结构同 raw_capture/annotated/）
+    │   ├── bottle/
+    │   │   ├── bottle_0001/
+    │   │   └── ...
+    │   └── wheelchair/
+    ├── dataset_report.json         # 校验+统计报告
+    └── dataset_report.html         # 报告的可视化版本</pre>
+
+  <div class="callout info">
+    <b>关键设计：</b>
+    <ul>
+      <li><b>raw_capture/</b> 是采集 + 标注的"工作台"，整个项目只属于内部使用。结构包含 <code>pending / annotated / discarded</code> 三个子目录代表样本的三种状态。</li>
+      <li><b>dataset/</b> 才是对外发布的"成品"。它由 finalize 脚本从 <code>raw_capture/annotated/</code> 复制而来，结构干净、自包含、可单独打包分发。</li>
+      <li>样本在三种状态间转移 = 移动目录（<code>pending → annotated</code> 或 <code>pending → discarded</code>），原子且可追溯。</li>
+    </ul>
+  </div>
+
+  <h3>5.2 命名规则</h3>
+  <ul>
+    <li><b>类别目录</b>：英文 slug（中文输入自动转拼音），同时在 <code>classes.json</code> 保留中文名与所有 alias。</li>
+    <li><b>sample_id</b>：<code>{class}_{4位序号}</code>，如 <code>bottle_0023</code>。同类内序号递增、跨类不复用。</li>
+    <li>样本在 <code>pending / annotated / discarded</code> 间移动时 <b>sample_id 不变</b>，便于追溯。</li>
+  </ul>
+</section>
+
+<!-- ===== 6 文件格式 ===== -->
+<section id="sec-6">
+  <h2>6. 文件格式定义</h2>
+
+  <h3>6.1 capture_meta.json（采集时由采集脚本写入）</h3>
+<pre>{
+  "sample_id": "bottle_0023",
+  "class_input_raw": "瓶子",       // 采集员输入的原始字符串
+  "class_name": "bottle",          // 归并后的英文 slug
+  "class_id": 2,
+  "captured_at": "2026-05-23T10:14:22+08:00",
+  "captured_by": "operator_a",     // 采集员标识，可选
+  "device": {
+    "model": "Intel RealSense D435",
+    "serial": "f1234567"
+  },
+  "image": { "width": 640, "height": 480 },
+  "depth": { "width": 640, "height": 480, "aligned_to": "color" }
+}</pre>
+
+  <h3>6.2 sample.json（标注后由标注脚本写入，对应阶段 2 产物）</h3>
+<pre>{
+  "sample_id": "bottle_0023",
+  "class_id": 2,
+  "class_name": "bottle",
+  "class_name_zh": "瓶子",
+
+  "rgb_path": "rgb.jpg",
+  "depth_path": "depth.png",
+  "mask_path": "mask.png",
+  "intrinsics_path": "intrinsics.json",
+  "pose_path": "pose.txt",
+  "points_path": "points.ply",
+  "aabb_path": "aabb.json",
+
+  "world_frame": "camera",
+  "pose_source": "dummy_identity",
+
+  "queries": {
+    "category": "bottle",
+    "name_zh": "瓶子",
+    "language": ["桌上的塑料瓶", "矿泉水瓶"]
+  },
+
+  "annotation": {
+    "annotator": "annotator_01",
+    "tool": "polygon_floodfill",
+    "annotated_at": "2026-05-23T15:32:11+08:00",
+    "occlusion": "partial_visible",
+    "denoise": {
+      "method": "depth_range + statistical_outlier + dbscan",
+      "params": {
+        "depth_min_m": 0.2, "depth_max_m": 5.0,
+        "sor_nb": 30, "sor_std": 2.0,
+        "dbscan_eps": 0.03, "dbscan_min_points": 50
+      }
+    }
+  },
+
+  "checksums": {
+    "rgb_sha1": "...", "depth_sha1": "...", "mask_sha1": "..."
+  }
+}</pre>
+
+  <h3>6.3 classes.json（采集时由采集脚本动态维护）</h3>
+<pre>{
+  "version": 1,
+  "managed_by": "capture_sample.py",
+  "next_id": 4,
+  "classes": [
+    {
+      "id": 1, "name": "bottle", "name_zh": "瓶子",
+      "aliases": ["bottle", "瓶子", "水瓶", "矿泉水瓶"],
+      "first_seen_at": "2026-05-23T09:00:01+08:00",
+      "last_updated_at": "2026-05-23T11:42:18+08:00",
+      "captured_count": 23
+    },
+    {
+      "id": 2, "name": "wheelchair", "name_zh": "轮椅",
+      "aliases": ["wheelchair", "轮椅"],
+      "first_seen_at": "2026-05-23T09:11:33+08:00",
+      "last_updated_at": "2026-05-23T11:08:50+08:00",
+      "captured_count": 18
+    }
+  ]
+}</pre>
+  <ul>
+    <li><b>id / name / name_zh / aliases</b>：与 v3 / v4 一致。</li>
+    <li><b>captured_count</b>：仅记录"采集"数量，<b>不</b>记录"标注后保留"数量。最终保留数由 finalize 脚本基于 <code>annotated/</code> 目录计算并写入 <code>dataset/classes.json</code>。</li>
+  </ul>
+
+  <h3>6.4 dataset.json（finalize 后产出）</h3>
+<pre>{
+  "name": "RoFA-SemEval",
+  "version": "1.0",
+  "task": "indicator_4.2_env_semantic_accuracy",
+  "world_frame": "camera",
+  "pose_source": "dummy_identity",
+  "depth_unit": "millimeter",
+  "depth_scale": 0.001,
+  "camera_model": "Intel RealSense D435",
+  "image": { "width": 640, "height": 480, "fps": 30 },
+  "depth": { "width": 640, "height": 480, "aligned_to": "color" },
+  "iou_thresholds": [0.25, 0.50],
+
+  "reference_scale_from_outline": {
+    "num_classes": 20, "num_samples_total": 1000,
+    "per_class_min": 25, "per_class_max": 75
+  },
+
+  "actual_stats": {
+    "num_classes": 14,
+    "num_samples": 712,
+    "per_class_distribution": {
+      "bottle": 60, "wheelchair": 21, "door_handle": 7, "...": "..."
+    },
+    "validated_at": "2026-05-23T18:00:00+08:00"
+  },
+
+  "created_at": "2026-05-23"
+}</pre>
+
+  <h3>6.5 samples.json（最终全集索引，<b>无 splits</b>）</h3>
+<pre>[
+  { "sample_id": "bottle_0001", "class_id": 2, "class_name": "bottle",
+    "sample_dir": "samples/bottle/bottle_0001" },
+  { "sample_id": "bottle_0002", "class_id": 2, "class_name": "bottle",
+    "sample_dir": "samples/bottle/bottle_0002" },
+  ...
+]</pre>
+
+  <h3>6.6 其他文件（与 v4 一致）</h3>
+  <table>
+    <thead><tr><th>文件</th><th>内容</th></tr></thead>
+    <tbody>
+      <tr><td><code>intrinsics.json</code></td><td><code>{ width, height, fx, fy, cx, cy, depth_scale, model: "pinhole", distortion: [..] }</code></td></tr>
+      <tr><td><code>pose.txt</code></td><td>4×4 行优先 ASCII 矩阵，dummy 阶段为单位阵 I</td></tr>
+      <tr><td><code>aabb.json</code></td><td><code>{ min, max, extent, center, num_points }</code>，与 <code>SearchEngine._compute_aabb</code> 输出一一对应</td></tr>
+      <tr><td><code>mask.png</code></td><td>单通道 uint8，0=背景，255=前景，尺寸 = rgb.jpg</td></tr>
+      <tr><td><code>points.ply</code></td><td>ASCII / binary_little_endian PLY，单位米，相机系</td></tr>
+      <tr><td><code>discard_reason.txt</code></td><td>纯文本，标注员选择删除时填写的原因</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ===== 7 标注流程 ===== -->
+<section id="sec-7">
+  <h2>7. 标注员工作流（连通域边界 + 自动填充 + 删减权）</h2>
+  <ol>
+    <li>启动 <code>annotate_sample.py</code>，自动跳到下一个 <code>raw_capture/pending/</code> 中未标注样本。</li>
+    <li>窗口左侧显示 <code>rgb.jpg</code>，右侧显示深度伪彩色图（辅助判断目标可视性）。</li>
+    <li>标注员用鼠标 <b>左键</b> 沿目标轮廓依次点击，画一圈 <b>闭合多边形</b>。</li>
+    <li>按 <b>空格 / 右键</b>：脚本调用 <code>cv2.fillPoly</code> 把多边形内部填充为前景，得到二值 <code>mask.png</code>。</li>
+    <li>脚本立即完成下游全自动处理：
+      <ul>
+        <li>读 depth + intrinsics → 反投影 mask 区域 → 相机系点云；</li>
+        <li>深度范围过滤（0.2~5.0 m）+ 统计离群点（SOR）+ DBSCAN 选最大连通簇；</li>
+        <li>计算 AABB → 写 <code>aabb.json</code> + <code>points.ply</code>；</li>
+        <li>渲染 <code>viz_mask.png</code> 与 <code>viz_aabb.png</code>（复用 <code>SearchEngine._save_aabb_2d_overlay</code>）；</li>
+        <li>写 <code>sample.json</code>。</li>
+      </ul>
+    </li>
+    <li>标注员决策：
+      <table>
+        <thead><tr><th>键</th><th>含义</th><th>样本去向</th></tr></thead>
+        <tbody>
+          <tr><td>y</td><td>接受 GT</td><td>整目录从 <code>pending/</code> 移到 <code>annotated/</code></td></tr>
+          <tr><td>n</td><td>重做（mask 不满意）</td><td>清空 mask，回到第 3 步</td></tr>
+          <tr><td>d</td><td><b>删除样本</b>（采集质量差 / 目标不可辨）</td><td>整目录从 <code>pending/</code> 移到 <code>discarded/</code>，附 <code>discard_reason.txt</code></td></tr>
+          <tr><td>s</td><td>跳过（暂时不处理）</td><td>留在 <code>pending/</code></td></tr>
+          <tr><td>q</td><td>退出</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </li>
+  </ol>
+  <div class="callout warn">
+    <b>关键权限：</b>标注员有<b>单方面删除样本</b>的权力（<code>d</code> 键）。删除不会真的丢文件，而是移动到 <code>discarded/</code> 子目录并附原因，便于事后追溯或回收。
+  </div>
+</section>
+
+<!-- ===== 8 脚本规划 ===== -->
+<section id="sec-8">
+  <h2>8. <code>scripts/</code> 脚本规划</h2>
+<pre>RobotMustFindAnything/scripts/
+├── capture_sample.py            # 阶段 1：采集
+├── annotate_sample.py           # 阶段 2：标注 + 删减
+└── finalize_dataset.py          # 阶段 3：完整性校验 + 发布</pre>
+
+  <h3>8.1 阶段 1 · <code>capture_sample.py</code></h3>
+  <table>
+    <thead><tr><th>项</th><th>设计</th></tr></thead>
+    <tbody>
+      <tr><td>输入参数</td><td><code>--raw-root</code> raw 池根目录（默认 <code>./RoFA-SemEval/raw_capture</code>）<br><code>--operator</code> 采集员标识（可选）</td></tr>
+      <tr><td>启动</td><td>用 <code>pyrealsense2</code> 启动 D435：彩色 640×480@30 + 深度 640×480@30，<code>rs.align(rs.stream.color)</code> 把深度对齐到彩色</td></tr>
+      <tr><td>首帧</td><td>读 <code>rs.video_stream_profile.get_intrinsics()</code> + <code>depth_sensor.get_depth_scale()</code></td></tr>
+      <tr><td>类别管理</td><td>启动后终端提示输入物品名（中英文均可）。脚本归一化输入并查 <code>classes.json</code>：命中 alias→复用；未命中→显示模糊匹配候选→用户选 "复用 / 新建"</td></tr>
+      <tr><td>主循环</td><td>实时窗口显示 RGB + 深度伪彩色 + 状态栏（当前类、当前类已采数、所有类累计、下一序号）。<b>仅展示事实统计，无目标进度</b></td></tr>
+      <tr><td>触发抓拍</td><td><b>空格</b> = 抓拍：自动确定下一个 <code>bottle_0007</code>，建目录于 <code>raw_capture/pending/bottle/</code>，落盘 <code>rgb.jpg / depth.png / intrinsics.json / pose.txt(=I) / capture_meta.json</code></td></tr>
+      <tr><td>切换类别</td><td><b>n</b> 键 = 切换或新建类别（再次走类别输入流程）</td></tr>
+      <tr><td>有效性即时检查</td><td>抓拍前先检查：① 深度有效像素占比 ≥ 50%；② 中心区域有非零深度。不达标拒绝抓拍并提示</td></tr>
+      <tr><td>退出</td><td><b>q</b> 退出，打印本次采集统计</td></tr>
+      <tr><td><b>不做的事</b></td><td>❌ 不画 mask；❌ 不算 AABB；❌ 不强制类别上限；❌ 不强制总数</td></tr>
+    </tbody>
+  </table>
+
+  <details>
+    <summary>采集时序伪代码</summary>
+<pre>pipeline = rs.pipeline()
+config = rs.config()
+config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+profile = pipeline.start(config)
+align = rs.align(rs.stream.color)
+intr = profile.get_stream(rs.stream.color).as_video_stream_profile().get_intrinsics()
+depth_scale = profile.get_device().first_depth_sensor().get_depth_scale()
+
+current_class = resolve_class(input("当前类别："), classes_json)
+
+while True:
+    frames = align.process(pipeline.wait_for_frames())
+    color = np.asanyarray(frames.get_color_frame().get_data())
+    depth = np.asanyarray(frames.get_depth_frame().get_data())  # uint16 mm
+    show(color, depth, current_class)
+    key = cv2.waitKey(1) &amp; 0xFF
+    if key == ord(' '):
+        if not depth_quality_ok(depth):
+            print("深度质量不达标，重拍")
+            continue
+        sample_dir = next_pending_dir(raw_root, current_class["name"])
+        save_rgb(sample_dir / 'rgb.jpg', color)
+        save_depth_uint16(sample_dir / 'depth.png', depth)
+        save_intrinsics(sample_dir / 'intrinsics.json', intr, depth_scale)
+        save_pose_identity(sample_dir / 'pose.txt')
+        save_capture_meta(sample_dir / 'capture_meta.json', current_class, operator)
+        bump_captured_count(classes_json, current_class)
+    elif key == ord('n'):
+        current_class = resolve_class(input("切换类别："), classes_json)
+    elif key == ord('q'):
+        break</pre>
+  </details>
+
+  <h3>8.2 阶段 2 · <code>annotate_sample.py</code></h3>
+  <table>
+    <thead><tr><th>项</th><th>设计</th></tr></thead>
+    <tbody>
+      <tr><td>输入参数</td><td><code>--raw-root</code> raw 池根目录<br><code>--annotator</code> 标注员标识<br><code>--class</code> 仅标注指定类别（可选，便于分工）</td></tr>
+      <tr><td>遍历</td><td>扫描 <code>raw_capture/pending/&lt;class&gt;/&lt;sample_id&gt;/</code>，按文件系统顺序逐个打开</td></tr>
+      <tr><td>UI</td><td>OpenCV 窗口：左 RGB / 右 depth 伪彩色，鼠标点画连通域多边形 → 空格填充得 mask</td></tr>
+      <tr><td>反投影</td><td>复用 <code>rofa.roimap.search_engine.SearchEngine._mask_to_world_points</code>（pose=I 时即得相机系点云）</td></tr>
+      <tr><td>去噪</td><td>① depth ∈ [0.2, 5.0] m；② <code>open3d.PointCloud.remove_statistical_outlier(nb=30, std=2.0)</code>；③ <code>cluster_dbscan(eps=0.03, min_points=50)</code> 取最大簇</td></tr>
+      <tr><td>AABB</td><td>复用 <code>SearchEngine._compute_aabb</code></td></tr>
+      <tr><td>可视化</td><td>复用 <code>_save_aabb_2d_overlay</code> + <code>_save_aabb_3d_plot</code></td></tr>
+      <tr><td>决策键</td><td><b>y</b> 接受 → 移到 <code>annotated/</code>；<b>n</b> 重做；<b>d</b> 删除 → 移到 <code>discarded/</code> + 写原因；<b>s</b> 跳过；<b>q</b> 退出</td></tr>
+      <tr><td>失败兜底</td><td>点云数 &lt; 阈值 / AABB extent 任一维 ≤ 0：提示重做或建议删除</td></tr>
+      <tr><td><b>不做的事</b></td><td>❌ 不接触 RealSense；❌ 不修改 raw 数据本身；❌ 不强制每类样本数</td></tr>
+    </tbody>
+  </table>
+
+  <h3>8.3 阶段 3 · <code>finalize_dataset.py</code></h3>
+  <p><b>核心定位：</b>把 <code>raw_capture/annotated/</code> 拷贝整理成最终发布数据集。<b>不做主观删减</b>，只兜底文件级完整性。</p>
+
+  <h4>8.3.1 完整性硬性检查（任一不通过 → 写入失败清单，不进入最终数据集）</h4>
+  <table>
+    <thead><tr><th>检查项</th><th>规则</th></tr></thead>
+    <tbody>
+      <tr><td>文件齐全</td><td>rgb / depth / mask / intrinsics / pose / aabb / points / sample.json 必须存在</td></tr>
+      <tr><td>尺寸一致</td><td>rgb.shape[:2] == depth.shape == mask.shape</td></tr>
+      <tr><td>分辨率</td><td>≥ 640×480（大纲 P3 硬性）</td></tr>
+      <tr><td>mask 非空</td><td>前景像素数 ≥ 200</td></tr>
+      <tr><td>点云规模</td><td>num_points ≥ 200</td></tr>
+      <tr><td>AABB 合法</td><td>extent 各维 &gt; 0；体积 ≥ 1e-6 m³</td></tr>
+      <tr><td>类别合法</td><td>class_id ∈ classes.json</td></tr>
+      <tr><td>哈希校验</td><td>sample.json.checksums 比对</td></tr>
+    </tbody>
+  </table>
+
+  <h4>8.3.2 拷贝与发布</h4>
+  <ul>
+    <li>把通过校验的样本目录从 <code>raw_capture/annotated/</code> 拷贝（或硬链接）到 <code>dataset/samples/&lt;class&gt;/&lt;sample_id&gt;/</code>。</li>
+    <li>从 <code>raw_capture/classes.json</code> 中过滤出"在最终数据集中至少有 1 条样本的类别"，写入 <code>dataset/classes.json</code>。</li>
+    <li>生成 <code>dataset/samples.json</code>（全集扁平索引）和 <code>dataset/dataset.json</code>（含 <code>actual_stats</code>）。</li>
+  </ul>
+
+  <h4>8.3.3 报告（不剔除任何东西，只展示事实）</h4>
+<pre>{
+  "validated_at": "2026-05-23T18:00:00+08:00",
+  "totals": {
+    "annotated_samples": 728,
+    "passed_integrity": 712,
+    "rejected_for_integrity": 16,
+    "discarded_by_annotator": 71,
+    "captured_total": 813
+  },
+  "per_class": [
+    { "name": "bottle", "name_zh": "瓶子", "in_dataset": 60,
+      "captured": 64, "annotated": 62, "discarded": 2, "rejected": 0,
+      "vs_outline": "在推荐区间 25~75 内" },
+    { "name": "door_handle", "name_zh": "门把手", "in_dataset": 7,
+      "captured": 8, "annotated": 7, "discarded": 1, "rejected": 0,
+      "vs_outline": "稀缺类，仅作参考" }
+  ],
+  "merge_suggestions": [
+    { "class_a": "bottle", "class_b": "water_bottle",
+      "reason": "alias 重叠 + Levenshtein=4" }
+  ],
+  "outline_targets": {
+    "num_classes": 20, "num_samples": 1000,
+    "per_class_min": 25, "per_class_max": 75
+  },
+  "outline_gap": {
+    "classes_short_by": 6,
+    "samples_short_by": 288
+  }
+}</pre>
+
+  <div class="callout info">
+    <b>不做的事：</b>finalize 脚本不会"因为某类样本数太少就剔除该类"，也不会自动合并相似类别。这些是<b>展示性</b>建议，需要回到 raw_capture 阶段由人工调整后重新跑 finalize。
+  </div>
+</section>
+
+<!-- ===== 9 与现有代码的衔接 ===== -->
+<section id="sec-9">
+  <h2>9. 与现有代码的衔接（零侵入）</h2>
+  <ul>
+    <li>✅ <code>intrinsics.json</code> 字段 <code>{fx, fy, cx, cy}</code> 与 <code>SearchEngine.camera_intrinsics</code> 完全一致；</li>
+    <li>✅ <code>depth.png</code> uint16 + <code>depth_scale=0.001</code> 与 <code>MainOnRobot(depth_scale=...)</code> 默认值一致；</li>
+    <li>✅ <code>pose.txt</code> 4×4 可被 <code>MainOnRobot._normalize_camera_pose</code> 直接解析；</li>
+    <li>✅ <code>aabb.json</code> 字段与 <code>SearchEngine._compute_aabb</code> 输出一一对应；</li>
+    <li>✅ <code>annotate_sample.py</code> 直接 <code>from rofa.roimap.search_engine import SearchEngine</code> 复用反投影、去噪、AABB、可视化函数；</li>
+    <li>✅ 数据集每条样本目录与 <code>rofa/roimap_fixed_data/&lt;anchor_id&gt;/last/</code> 几乎同构，未来若要把数据集"灌"进现有 anchor map，只需软链或拷贝即可。</li>
+  </ul>
+</section>
+
+<!-- ===== 10 待确认事项 ===== -->
+<section id="sec-10">
+  <h2>10. 待你拍板的事项</h2>
+  <ol>
+    <li>RGB 分辨率取 640×480 还是 1280×720？大纲只要求 ≥640×480，但 D435 高分下深度有效区域更小，<b>建议默认 640×480</b>。</li>
+    <li>类别 slug 生成策略：① 中文转拼音（<code>瓶子→pingzi</code>）；② 保留中文做目录名；③ 强制英文输入。<b>建议 ① + 撞名时 _2/_3 后缀</b>。</li>
+    <li>采集时是否额外存原始 ROS bag（备未来语义地图实验）？<b>默认不存</b>。</li>
+    <li>finalize 拷贝 vs 硬链接：默认 <b>硬链接</b>（节省空间，<code>raw_capture/</code> 与 <code>dataset/</code> 同盘时）；<b>跨盘则降级为拷贝</b>。是否接受？</li>
+  </ol>
+  <div class="callout info">
+    <b>下一步：</b>你确认本方案后，按 <code>capture_sample.py → annotate_sample.py → finalize_dataset.py</code> 顺序实现。<b>每个脚本完成后单独提交</b>，便于阶段性验证。
+  </div>
+</section>
+
+</div>
+</body>
+</html>
