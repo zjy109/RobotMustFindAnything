@@ -631,28 +631,81 @@ def write_annotation_products(
     # points.ply
     write_ply_xyz(sample_dir / "points.ply", points_cam)
 
-    # aabb.json
-    save_json(sample_dir / "aabb.json", aabb)
+    # ------------------------------------------------------------------ #
+    # 2D bbox：算两个来源（GT + 3D AABB 投影对照），写进 aabb.json
+    # ------------------------------------------------------------------ #
+    img_h, img_w = rgb_bgr.shape[:2]
 
-    # viz_mask.png：复用 SearchEngine._save_mask_visualization 风格，但写到子目录
+    # ① mask 紧致 bbox（GT 来源，必有）
+    bbox_from_mask: Optional[List[int]] = None
+    ys_m, xs_m = np.where(mask_bool)
+    if len(xs_m):
+        bbox_from_mask = [
+            int(xs_m.min()), int(ys_m.min()),
+            int(xs_m.max()), int(ys_m.max()),
+        ]
+
+    # ② 3D AABB 投影到图像后的外接矩形（对照参考；越界/全部 z<=0 则为 None）
+    bbox_from_aabb_proj: Optional[List[int]] = None
+    try:
+        corners_world = SearchEngine._aabb_corners(  # noqa: SLF001
+            np.asarray(aabb["min"], dtype=np.float32),
+            np.asarray(aabb["max"], dtype=np.float32),
+        )
+        corners_uv, corner_valid, _ = engine._project_world_points_to_image(  # noqa: SLF001
+            corners_world, pose, rgb_bgr.shape
+        )
+        if corner_valid.any():
+            uv_ok = corners_uv[corner_valid]
+            x1f = float(np.min(uv_ok[:, 0]))
+            y1f = float(np.min(uv_ok[:, 1]))
+            x2f = float(np.max(uv_ok[:, 0]))
+            y2f = float(np.max(uv_ok[:, 1]))
+            # clip 到图像内并确保 x2>x1, y2>y1
+            x1 = int(max(0, min(img_w - 1, np.floor(x1f))))
+            y1 = int(max(0, min(img_h - 1, np.floor(y1f))))
+            x2 = int(max(0, min(img_w - 1, np.ceil(x2f))))
+            y2 = int(max(0, min(img_h - 1, np.ceil(y2f))))
+            if x2 > x1 and y2 > y1:
+                bbox_from_aabb_proj = [x1, y1, x2, y2]
+    except Exception as exc:
+        print(f"[annotate] 计算 bbox_from_aabb_proj 失败（已忽略）: {exc}")
+
+    aabb_with_2d = dict(aabb)
+    aabb_with_2d["bbox_2d"] = {
+        "from_mask": bbox_from_mask,
+        "from_aabb_proj": bbox_from_aabb_proj,
+        "image_width": img_w,
+        "image_height": img_h,
+        "format": "xyxy_pixel",
+    }
+
+    # aabb.json
+    save_json(sample_dir / "aabb.json", aabb_with_2d)
+
+    # viz_mask.png：绿色 mask 半透明叠加 + 红色 mask 紧致 bbox
     overlay = rgb_bgr.copy()
     overlay[mask_bool] = (
         0.4 * overlay[mask_bool] + 0.6 * np.array([0, 255, 0])
     ).astype(np.uint8)
-    ys, xs = np.where(mask_bool)
-    if len(xs):
-        bbox = [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
-        cv2.rectangle(overlay, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 0, 255), 2)
+    if bbox_from_mask is not None:
+        cv2.rectangle(
+            overlay,
+            (bbox_from_mask[0], bbox_from_mask[1]),
+            (bbox_from_mask[2], bbox_from_mask[3]),
+            (0, 0, 255), 2,
+        )
     cv2.imwrite(str(sample_dir / "viz_mask.png"), overlay)
 
     # viz_aabb.png：复用 _save_aabb_2d_overlay
     try:
-        corners = SearchEngine._aabb_corners(  # noqa: SLF001
+        # 重新算一遍 corners_uv（前面那次只在 try 内可用，这里独立块更稳）
+        corners_world = SearchEngine._aabb_corners(  # noqa: SLF001
             np.asarray(aabb["min"], dtype=np.float32),
             np.asarray(aabb["max"], dtype=np.float32),
         )
         corners_uv, valid, _ = engine._project_world_points_to_image(  # noqa: SLF001
-            corners, pose, rgb_bgr.shape
+            corners_world, pose, rgb_bgr.shape
         )
         out_path = SearchEngine._save_aabb_2d_overlay(  # noqa: SLF001
             sample_dir, rgb_bgr, corners_uv, valid, bbox=None
@@ -683,6 +736,10 @@ def write_annotation_products(
     print(
         f"[annotate] AABB: min={aabb['min']} max={aabb['max']} "
         f"extent={aabb['extent']} num_points={aabb['num_points']}"
+    )
+    print(
+        f"[annotate] bbox_2d: from_mask={bbox_from_mask} "
+        f"from_aabb_proj={bbox_from_aabb_proj}"
     )
     print(f"[annotate] denoise: {denoise_info}")
 
@@ -716,6 +773,17 @@ def build_sample_json(
     annotation_method = "vlm_predicted_accepted" if used_vlm_mask else "manual_polygon"
     tool_name = "vlm_rynnbrain_sam2" if used_vlm_mask else "polygon_floodfill"
 
+    # 从 aabb.json 读 GT 2D bbox（write_annotation_products 已写入）
+    bbox_2d_gt: Optional[List[int]] = None
+    try:
+        aabb_doc = load_json(sample_dir / "aabb.json", default=None)
+        if isinstance(aabb_doc, dict):
+            b = aabb_doc.get("bbox_2d", {}).get("from_mask")
+            if isinstance(b, list) and len(b) == 4:
+                bbox_2d_gt = [int(v) for v in b]
+    except Exception as exc:
+        print(f"[annotate] 读取 aabb.json 的 bbox_2d 失败（已忽略）: {exc}")
+
     return {
         "sample_id": sample_id,
         "class_id": class_id,
@@ -742,6 +810,9 @@ def build_sample_json(
             "annotated_at": now_iso(),
             "denoise": denoise_info,
             "vlm": vlm_meta,  # None 或 {host, prompt, bbox_pixel, fg_pixels}
+            # 2D bbox GT（来自 mask 紧致 bbox，xyxy 像素）。
+            # 完整三来源（含 from_aabb_proj）见 aabb.json.bbox_2d。
+            "bbox_2d": bbox_2d_gt,
         },
         "capture_meta": capture_meta,
         "checksums": {

@@ -117,6 +117,16 @@ python scripts/annotate_sample.py \
   - **q** 退出
 - 画 mask 过程中：**z** 撤销最近一个顶点，**r** 清空重画
 
+接受后样本目录里的关键产物：
+
+| 文件 | 内容 |
+|---|---|
+| `mask.png` | uint8，前景=255 |
+| `points.ply` | mask 反投影 + 去噪后的世界系点云 |
+| `aabb.json` | 3D AABB（`min`/`max`/`extent`/`num_points`） + **2D bbox 全集**：`bbox_2d.from_mask`（GT，xyxy 像素）、`bbox_2d.from_aabb_proj`（3D AABB 投影到图像的外接矩形，可能为 `null`）、`image_width`/`image_height`/`format` |
+| `sample.json` | 索引元数据；`annotation.bbox_2d` = GT 紧致 bbox（= `aabb.json.bbox_2d.from_mask`），`annotation.method` 标记 `manual_polygon` / `vlm_predicted_accepted` |
+| `viz_mask.png` / `viz_aabb.png` / `viz_aabb_3d.png` | 给标注员审阅用的可视化图 |
+
 #### 4.1 （可选）AI 预标加速：RynnBrain + SAM2
 
 如果你想"先让模型猜一遍，不行再人工画"，可以用 `--use-vlm` 接到已经在跑的 VLM 服务（`real_main_on_server.py`）。
