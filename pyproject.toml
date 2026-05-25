@@ -19,9 +19,13 @@ capture = [
 ]
 
 # 阶段 2 标注：点云去噪 + 3D 可视化
+# pyzmq 是因为 annotate_sample.py import 了 rofa.roimap.search_engine
+# （仅复用其中的反投影/AABB 算法），而该模块顶部 import 了 zmq；
+# 我们不真正使用 ZMQ，只是为了让 import 通过。
 annotate = [
     "open3d",
     "matplotlib",
+    "pyzmq",
 ]
 
 # 阶段 3 发布：仅基础依赖即可，无额外项
@@ -31,6 +35,7 @@ all = [
     "pyrealsense2; platform_system != 'Darwin'",  # macOS 不发布 pyrealsense2 wheel，跳过
     "open3d",
     "matplotlib",
+    "pyzmq",
 ]
 
 [tool.uv]
