@@ -117,6 +117,59 @@ python scripts/annotate_sample.py \
   - **q** 退出
 - 画 mask 过程中：**z** 撤销最近一个顶点，**r** 清空重画
 
+#### 4.1 （可选）AI 预标加速：RynnBrain + SAM2
+
+如果你想"先让模型猜一遍，不行再人工画"，可以用 `--use-vlm` 接到已经在跑的 VLM 服务（`real_main_on_server.py`）。
+
+**原理**：标注脚本会把每张待标的 `rgb.jpg` 通过 ZMQ 发给 server；server 端用 RynnBrain 出 bbox + SAM2 出 mask，把 mask base64 回传。标注脚本拿到 mask 后弹一个红色叠加预览，你只需 y/n 决策——
+
+- **y** 直接接受预标 mask，跳过手画，进入正常的 反投影/AABB/决策 流程；
+- **n** 预标不行，进入手画分支（与原流程完全一致）；
+- **d/s/q** 同上：删除 / 跳过 / 退出。
+
+**先把 server 起来**（在有 GPU 和 RynnBrain 权重的机器上）：
+```bash
+# 在 server 机器
+python real_main_on_server.py
+# 或自定义参数
+python rofa/vlm_server/server.py --port 5555 --model-path /path/to/RynnBrain-8B
+```
+
+**标注端启用预标**（标注员的工作机，可以是另一台机器）：
+```bash
+python scripts/annotate_sample.py \
+    --raw-root ./RoFA-SemEval/raw_capture \
+    --annotator alice \
+    --use-vlm \
+    --vlm-host 192.168.x.y \
+    --vlm-port 5555
+```
+
+**slug → prompt 映射**：脚本内置了项目中已有的 4 类（`shuihu→kettle, shuibei→cup, penzai→potted plant, guochan→spatula`）。其他类会自动 fallback 到 `classes.json` 里的 `name_zh`（VLM 8B 一般能理解中文）。也可以用 JSON 文件覆盖：
+
+```bash
+echo '{"shuihu": "thermos bottle", "guochan": "kitchen spatula"}' > my_prompts.json
+python scripts/annotate_sample.py --use-vlm --vlm-prompt-map my_prompts.json ...
+```
+
+**`sample.json` 中的标注溯源**：每条样本会记录 `annotation.method`：
+- `manual_polygon` — 标注员从空白手画
+- `vlm_predicted_accepted` — 标注员看了预标后按 `y` 接受
+
+下游训练 / 评测里可以按需筛选"纯人工"或"AI 辅助"样本。
+
+**先单独自测 client**（可以不跑 annotate，先确认 server 能正常分割）：
+```bash
+python scripts/vlm_seg_client.py \
+    --host 192.168.x.y --port 5555 \
+    --image raw_capture/pending/guochan/guochan_0001/rgb.jpg \
+    --prompt "spatula" \
+    --out /tmp/pred_mask.png \
+    --out-overlay /tmp/pred_overlay.png
+```
+
+**降级行为**：当 server 连不上 / 预标超时 / 模型未找到目标 / 返回 mask 尺寸异常时，脚本只会 print 一行警告，然后无缝 fallback 到原本的手画流程。**`--use-vlm` 的存在本身是无副作用的**。
+
 ### 5. 阶段 3：发布
 
 ```bash

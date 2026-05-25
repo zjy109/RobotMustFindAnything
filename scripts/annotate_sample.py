@@ -49,6 +49,15 @@ from _dataset_common import (  # noqa: E402
 )
 from rofa.roimap.search_engine import SearchEngine  # noqa: E402
 
+# VLM 预分割客户端（可选，仅 --use-vlm 时启用）
+try:
+    from vlm_seg_client import VLMSegClient  # noqa: E402
+except Exception as _vlm_import_exc:  # pragma: no cover - 仅在缺 zmq 等依赖时触发
+    VLMSegClient = None  # type: ignore[assignment]
+    _VLM_IMPORT_ERROR: Optional[str] = str(_vlm_import_exc)
+else:
+    _VLM_IMPORT_ERROR = None
+
 
 # --------------------------------------------------------------------------- #
 # 默认参数
@@ -62,6 +71,23 @@ DEFAULT_DBSCAN_EPS = 0.03
 DEFAULT_DBSCAN_MIN_POINTS = 50
 MIN_MASK_PIXELS = 200
 MIN_POINTS_AFTER_DENOISE = 200
+
+# --------------------------------------------------------------------------- #
+# VLM 预标：slug → 模型 prompt 默认映射
+# --------------------------------------------------------------------------- #
+# RynnBrain server 端模板是英文 prompt（"Localize the EXACT '<obj>' ..."），
+# 所以这里把项目里的中文 / 拼音 slug 映射成英文。
+# 命中规则：先 --vlm-prompt-map JSON、再 DEFAULT_SLUG_TO_PROMPT、最后 fallback 到 slug 本身。
+DEFAULT_SLUG_TO_PROMPT: Dict[str, str] = {
+    "shuihu": "kettle",
+    "shuibei": "cup",
+    "penzai": "potted plant",
+    "guochan": "spatula",
+}
+
+DEFAULT_VLM_HOST = "127.0.0.1"
+DEFAULT_VLM_PORT = 5555
+DEFAULT_VLM_TIMEOUT_MS = 90_000
 
 
 # --------------------------------------------------------------------------- #
@@ -403,9 +429,14 @@ def process_one_sample(
     annotator_id: str,
     classes_doc: Dict[str, Any],
     args: argparse.Namespace,
+    vlm_client: Optional["VLMSegClient"] = None,
+    prompt_resolver: Optional[Any] = None,
 ) -> str:
     """
     返回决策结果："accept" / "discard" / "skip" / "quit" / "redo_failed"。
+
+    若传入 vlm_client（即 --use-vlm 启用且初始化成功），则在让人手画前
+    先尝试一次模型预标；标注员可以选择直接接受或转入手画。
     """
     sample_id = sample_dir.name
     class_slug = sample_dir.parent.name
@@ -425,17 +456,70 @@ def process_one_sample(
     depth_vis = depth_to_vis(depth)
     engine = make_search_engine_stub(intrinsics, intrinsics.get("depth_scale", 0.001))
 
-    while True:
-        annot = PolygonAnnotator(rgb, depth_vis)
-        header = f"sample={sample_id}  class={class_slug}"
-        mask_bool = annot.run(header)
+    # ------------------------------------------------------------------ #
+    # 阶段 0：模型预标（可选）
+    # ------------------------------------------------------------------ #
+    pred_mask: Optional[np.ndarray] = None
+    pred_meta: Optional[Dict[str, Any]] = None
+    if vlm_client is not None and prompt_resolver is not None:
+        prompt = prompt_resolver(class_slug)
+        print(f"[annotate] VLM 预标中... prompt='{prompt}'")
+        try:
+            pred = vlm_client.predict(rgb, prompt, anchor_id=sample_id)
+        except Exception as exc:
+            print(f"[annotate] VLM 预标异常（已忽略，转人工）: {exc}")
+            pred = None
 
-        if mask_bool is None:
-            # 用户在画 mask 时按 q
-            return _post_decision_prompt(sample_dir, sample_id)
+        if pred is not None and pred.get("mask") is not None:
+            mask_pred_raw = pred["mask"]
+            n_fg = int(mask_pred_raw.sum())
+            if n_fg < MIN_MASK_PIXELS:
+                print(
+                    f"[annotate] VLM 预标 mask 太小 ({n_fg} < {MIN_MASK_PIXELS})，丢弃"
+                )
+            else:
+                pred_mask = mask_pred_raw
+                pred_meta = {
+                    "host": f"{vlm_client.host}:{vlm_client.port}",
+                    "prompt": prompt,
+                    "bbox_pixel": pred.get("bbox_pixel"),
+                    "fg_pixels": n_fg,
+                }
+
+    while True:
+        # ------------------------------------------------------------------ #
+        # 阶段 1：决定 mask 来源 —— 接受预标 / 进入手画
+        # ------------------------------------------------------------------ #
+        used_vlm_mask = False
+        if pred_mask is not None:
+            choice = preview_vlm_prediction(rgb, pred_mask, pred_meta, sample_id, class_slug)
+            if choice == "accept":
+                mask_bool = pred_mask
+                used_vlm_mask = True
+            elif choice == "manual":
+                # 转人工：丢掉 pred_mask，让标注员重画一次（之后样本里该决策也不再尝试预标）
+                pred_mask = None
+                continue  # 回到 while 顶端，下一轮走人工分支
+            elif choice == "skip":
+                return "skip"
+            elif choice == "discard":
+                return _post_decision_prompt_returning_known("d", sample_dir, sample_id)
+            else:  # quit
+                return "quit"
+        else:
+            annot = PolygonAnnotator(rgb, depth_vis)
+            header = f"sample={sample_id}  class={class_slug}"
+            mask_bool_or_none = annot.run(header)
+
+            if mask_bool_or_none is None:
+                # 用户在画 mask 时按 q
+                return _post_decision_prompt(sample_dir, sample_id)
+            mask_bool = mask_bool_or_none
 
         if int(mask_bool.sum()) < MIN_MASK_PIXELS:
             print(f"[annotate] mask 太小（{int(mask_bool.sum())} px < {MIN_MASK_PIXELS}），重画")
+            if used_vlm_mask:
+                pred_mask = None  # 别再用预标了
             continue
 
         # 反投影 + 去噪 + AABB
@@ -511,18 +595,23 @@ def process_one_sample(
                 "aabb.json",
                 "viz_mask.png",
                 "viz_aabb.png",
+                "viz_aabb_3d.png",
                 "sample.json",
             ):
                 fp = sample_dir / fname
                 if fp.exists():
                     fp.unlink()
+            # redo 一律转人工：标注员看完产物还按 n，说明预标 mask 也不行
+            pred_mask = None
             continue
 
         if decision == "accept":
-            # 写 sample.json（含 annotator 信息 + checksums）
+            # 写 sample.json（含 annotator 信息 + checksums + 标注方法）
             sample_json = build_sample_json(
                 sample_dir, sample_id, class_slug, annotator_id,
                 classes_doc, capture_meta, denoise_info,
+                used_vlm_mask=used_vlm_mask,
+                vlm_meta=pred_meta if used_vlm_mask else None,
             )
             save_json(sample_dir / "sample.json", sample_json)
             return "accept"
@@ -610,6 +699,8 @@ def build_sample_json(
     classes_doc: Dict[str, Any],
     capture_meta: Dict[str, Any],
     denoise_info: Dict[str, Any],
+    used_vlm_mask: bool = False,
+    vlm_meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     class_obj = next(
         (c for c in classes_doc.get("classes", []) if c.get("name") == class_slug),
@@ -625,6 +716,9 @@ def build_sample_json(
     rgb_sha = sha1_of_file(sample_dir / "rgb.jpg")
     depth_sha = sha1_of_file(sample_dir / "depth.png")
     mask_sha = sha1_of_file(sample_dir / "mask.png")
+
+    annotation_method = "vlm_predicted_accepted" if used_vlm_mask else "manual_polygon"
+    tool_name = "vlm_rynnbrain_sam2" if used_vlm_mask else "polygon_floodfill"
 
     return {
         "sample_id": sample_id,
@@ -647,9 +741,11 @@ def build_sample_json(
         },
         "annotation": {
             "annotator": annotator_id,
-            "tool": "polygon_floodfill",
+            "method": annotation_method,
+            "tool": tool_name,
             "annotated_at": now_iso(),
             "denoise": denoise_info,
+            "vlm": vlm_meta,  # None 或 {host, prompt, bbox_pixel, fg_pixels}
         },
         "capture_meta": capture_meta,
         "checksums": {
@@ -695,6 +791,80 @@ def _decision_to_action(decision: str, sample_dir: Path, sample_id: str) -> str:
     if decision == "q":
         return "quit"
     return "skip"
+
+
+def _post_decision_prompt_returning_known(
+    decision: str, sample_dir: Path, sample_id: str
+) -> str:
+    """
+    `process_one_sample` 内部用：把已经拿到的 decision 字符（'d'/'s'/'q'）
+    走与 `_post_decision_prompt` 相同的语义映射。当 decision == 'd' 时还会
+    走 main() 里的 prompt_discard_reason，所以这里只需返回 action 字符串。
+    """
+    return _decision_to_action(decision, sample_dir, sample_id)
+
+
+def preview_vlm_prediction(
+    rgb_bgr: np.ndarray,
+    pred_mask: np.ndarray,
+    pred_meta: Optional[Dict[str, Any]],
+    sample_id: str,
+    class_slug: str,
+) -> str:
+    """
+    在 OpenCV 窗口里预览 VLM 预标 mask（红色叠加 + 绿色 bbox），
+    标注员按键决定下一步。
+
+    返回字符串：
+        "accept"   接受预标 mask，跳过手画
+        "manual"   预标不行，转人工手画
+        "skip"     跳过当前样本（留 pending）
+        "discard"  删除当前样本（移到 discarded/）
+        "quit"     退出标注程序
+    """
+    overlay = rgb_bgr.copy()
+    # 半透明红色覆盖
+    if pred_mask.any():
+        red = np.zeros_like(overlay)
+        red[..., 2] = 255  # BGR 红
+        overlay[pred_mask] = cv2.addWeighted(
+            overlay[pred_mask], 0.5, red[pred_mask], 0.5, 0
+        )
+
+    # bbox（mask 自身推出来一遍，比 server 给的 bbox 更准——SAM2 的 mask 边界
+    # 才是最终用的）
+    ys, xs = np.where(pred_mask)
+    if len(xs):
+        x1, y1, x2, y2 = int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())
+        cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+    fg = int(pred_mask.sum())
+    fg_pct = fg / pred_mask.size * 100.0
+    prompt = pred_meta.get("prompt") if pred_meta else "?"
+
+    status_lines = [
+        f"sample={sample_id}  class={class_slug}  prompt='{prompt}'",
+        f"VLM PREDICTION  fg={fg}px ({fg_pct:.1f}%)",
+        "y accept | n manual draw | d discard | s skip | q quit",
+    ]
+    for i, line in enumerate(status_lines):
+        cv2.putText(
+            overlay, line, (10, 24 + i * 26),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA,
+        )
+
+    cv2.imshow(PolygonAnnotator.WIN, overlay)
+    decision = _wait_yes_no_etc(["y", "n", "d", "s", "q"])
+
+    if decision == "y":
+        return "accept"
+    if decision == "n":
+        return "manual"
+    if decision == "d":
+        return "discard"
+    if decision == "s":
+        return "skip"
+    return "quit"
 
 
 def preview_and_decide(sample_dir: Path, sample_id: str, class_slug: str) -> str:
@@ -844,6 +1014,25 @@ def main() -> int:
     parser.add_argument("--sor-std", type=float, default=DEFAULT_SOR_STD)
     parser.add_argument("--dbscan-eps", type=float, default=DEFAULT_DBSCAN_EPS)
     parser.add_argument("--dbscan-min-points", type=int, default=DEFAULT_DBSCAN_MIN_POINTS)
+
+    # ----- VLM 预标（可选） -----
+    parser.add_argument(
+        "--use-vlm", action="store_true",
+        help="启用 RynnBrain+SAM2 服务做预标，标注员只需 y/n 决策；"
+             "失败/拒绝时自动 fallback 到手画。",
+    )
+    parser.add_argument("--vlm-host", type=str, default=DEFAULT_VLM_HOST,
+                        help="VLM ZMQ server 地址")
+    parser.add_argument("--vlm-port", type=int, default=DEFAULT_VLM_PORT,
+                        help="VLM ZMQ server 端口")
+    parser.add_argument("--vlm-timeout-ms", type=int, default=DEFAULT_VLM_TIMEOUT_MS,
+                        help="单次 predict 超时时间（毫秒）")
+    parser.add_argument(
+        "--vlm-prompt-map", type=str, default=None,
+        help="可选：JSON 文件路径，覆盖默认的 slug→prompt 表。例如 "
+             '\'{"shuihu": "kettle", "guochan": "spatula"}\'',
+    )
+
     args = parser.parse_args()
 
     raw_root = Path(args.raw_root).expanduser().resolve()
@@ -860,14 +1049,79 @@ def main() -> int:
         return 0
     print(f"[annotate] 共 {len(samples)} 个 pending 样本")
 
-    counters = {"accept": 0, "discard": 0, "skip": 0, "redo_failed": 0}
+    # ------------------------------------------------------------------ #
+    # 初始化 VLM client（如果启用）
+    # ------------------------------------------------------------------ #
+    vlm_client = None
+    prompt_resolver = None
+    if args.use_vlm:
+        if VLMSegClient is None:
+            print(
+                f"[annotate] --use-vlm 启用但 vlm_seg_client 不可用 "
+                f"({_VLM_IMPORT_ERROR})，将 fallback 到纯人工标注。"
+            )
+        else:
+            # 加载 prompt 映射（默认表 ⊕ 用户覆盖）
+            prompt_map = dict(DEFAULT_SLUG_TO_PROMPT)
+            if args.vlm_prompt_map:
+                try:
+                    user_map = load_json(Path(args.vlm_prompt_map).expanduser())
+                    if isinstance(user_map, dict):
+                        prompt_map.update({str(k): str(v) for k, v in user_map.items()})
+                        print(f"[annotate] 已加载自定义 prompt 映射: {args.vlm_prompt_map}")
+                except Exception as exc:
+                    print(f"[annotate] 读取 --vlm-prompt-map 失败: {exc}")
+
+            # 也把 classes.json 里的 name_zh 作为 fallback 兜底（如果用户根本没配映射）
+            for c in classes_doc.get("classes", []):
+                slug = c.get("name")
+                if slug and slug not in prompt_map:
+                    # 使用 name_zh，VLM 8B 模型大概率支持中文；不行的话用户可自行 --vlm-prompt-map
+                    name_zh = c.get("name_zh") or slug
+                    prompt_map[slug] = str(name_zh)
+
+            def prompt_resolver(slug: str, _m: Dict[str, str] = prompt_map) -> str:
+                return _m.get(slug, slug)
+
+            try:
+                vlm_client = VLMSegClient(
+                    host=args.vlm_host,
+                    port=args.vlm_port,
+                    timeout_ms=args.vlm_timeout_ms,
+                )
+                print(
+                    f"[annotate] ✓ VLM client connected → "
+                    f"tcp://{args.vlm_host}:{args.vlm_port} "
+                    f"(timeout={args.vlm_timeout_ms}ms)"
+                )
+                print(f"[annotate]   slug→prompt: {prompt_map}")
+            except Exception as exc:
+                print(
+                    f"[annotate] VLM client 初始化失败 ({exc})，"
+                    "将 fallback 到纯人工标注。"
+                )
+                vlm_client = None
+                prompt_resolver = None
+
+    counters = {"accept": 0, "discard": 0, "skip": 0, "redo_failed": 0,
+                "vlm_accepted": 0}
     rc = 0
     try:
         for sdir in samples:
-            decision = process_one_sample(sdir, args.annotator, classes_doc, args)
+            decision = process_one_sample(
+                sdir, args.annotator, classes_doc, args,
+                vlm_client=vlm_client, prompt_resolver=prompt_resolver,
+            )
             if decision == "accept":
                 target = move_sample_to(raw_root, sdir, "annotated")
                 counters["accept"] += 1
+                # 看一眼 sample.json 的 method 字段，便于 session 末尾打统计
+                try:
+                    sj = load_json(target / "sample.json")
+                    if sj and sj.get("annotation", {}).get("method") == "vlm_predicted_accepted":
+                        counters["vlm_accepted"] += 1
+                except Exception:
+                    pass
                 print(f"[annotate] ✓ accept → {target.relative_to(raw_root)}")
             elif decision == "discard":
                 reason = prompt_discard_reason()
@@ -891,11 +1145,16 @@ def main() -> int:
         traceback.print_exc()
         rc = 2
     finally:
+        if vlm_client is not None:
+            try:
+                vlm_client.close()
+            except Exception:
+                pass
         cv2.destroyAllWindows()
 
     print("\n=== annotation session summary ===")
     for k, v in counters.items():
-        print(f"  {k:<10s}: {v}")
+        print(f"  {k:<14s}: {v}")
     return rc
 
 
