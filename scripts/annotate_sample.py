@@ -81,7 +81,7 @@ MIN_POINTS_AFTER_DENOISE = 200
 #     1. --vlm-prompt-map JSON 里显式给出的 slug → prompt
 #     2. classes.json 中该 slug 的 name_zh
 #     3. slug 本身（最后兜底，例如 classes.json 缺失时）
-DEFAULT_VLM_HOST = "127.0.0.1"
+DEFAULT_VLM_HOST = "219.223.200.92"
 DEFAULT_VLM_PORT = 5555
 DEFAULT_VLM_TIMEOUT_MS = 90_000
 
