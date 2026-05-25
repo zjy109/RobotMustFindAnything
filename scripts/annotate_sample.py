@@ -699,8 +699,17 @@ def _decision_to_action(decision: str, sample_dir: Path, sample_id: str) -> str:
 
 def preview_and_decide(sample_dir: Path, sample_id: str, class_slug: str) -> str:
     """
-    展示 viz_mask + viz_aabb，等待标注员决定。
+    展示 viz_mask + viz_aabb（上排）+ viz_aabb_3d（下排），等待标注员决定。
     返回 "accept" / "redo" / "discard" / "skip" / "quit"。
+
+    布局：
+        +----------------+----------------+
+        |   viz_mask     |   viz_aabb     |   <- 上排，2D 视角
+        +----------------+----------------+
+        |        viz_aabb_3d (4 子图)     |   <- 下排，3D 多视角
+        +---------------------------------+
+
+    若 viz_aabb_3d.png 不存在（matplotlib 缺失等），则自动退回到仅显示上排。
     """
     viz_mask = cv2.imread(str(sample_dir / "viz_mask.png"))
     viz_aabb = (
@@ -708,13 +717,44 @@ def preview_and_decide(sample_dir: Path, sample_id: str, class_slug: str) -> str
         if (sample_dir / "viz_aabb.png").exists()
         else None
     )
+    viz_aabb_3d = (
+        cv2.imread(str(sample_dir / "viz_aabb_3d.png"))
+        if (sample_dir / "viz_aabb_3d.png").exists()
+        else None
+    )
     if viz_mask is None:
         print("[annotate] 无 viz_mask.png，直接返回 redo")
         return "redo"
 
-    panel = viz_mask if viz_aabb is None else np.hstack(
-        [viz_mask, _resize_to(viz_aabb, viz_mask.shape[:2])]
-    )
+    # ===== 上排：2D 视角拼图 =====
+    if viz_aabb is None:
+        top_row = viz_mask
+    else:
+        top_row = np.hstack(
+            [viz_mask, _resize_to(viz_aabb, viz_mask.shape[:2])]
+        )
+
+    # ===== 下排：3D 多视角图（缩放到上排同宽） =====
+    if viz_aabb_3d is not None:
+        top_w = top_row.shape[1]
+        scale = top_w / viz_aabb_3d.shape[1]
+        new_h = max(1, int(round(viz_aabb_3d.shape[0] * scale)))
+        bottom_row = cv2.resize(
+            viz_aabb_3d, (top_w, new_h), interpolation=cv2.INTER_AREA
+        )
+        # 整体面板若超过屏幕高度上限，等比缩小
+        panel = np.vstack([top_row, bottom_row])
+        max_h = 950  # 给状态栏与窗口装饰留出空间
+        if panel.shape[0] > max_h:
+            s = max_h / panel.shape[0]
+            panel = cv2.resize(
+                panel,
+                (int(round(panel.shape[1] * s)), max_h),
+                interpolation=cv2.INTER_AREA,
+            )
+    else:
+        panel = top_row
+
     status = (
         f"sample={sample_id}  class={class_slug}\n"
         "y accept | n redo | d discard | s skip | q quit"

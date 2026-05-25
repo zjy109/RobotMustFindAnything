@@ -532,7 +532,14 @@ class SearchEngine:
     @classmethod
     def _save_aabb_3d_plot(cls, anchor_dir, points_world, aabb_min, aabb_max):
         """
-        使用 matplotlib 离线渲染点云 + AABB 立方体线框，保存为 PNG。
+        使用 matplotlib 离线渲染 2x2 多视角点云 + AABB 立方体线框，保存为 PNG。
+
+        子图布局：
+            [左上] 自由 3D 视角           [右上] 俯视 (X-Z 平面，从 +Y 看下来)
+            [左下] 正视 (X-Y 平面，相机视角)  [右下] 侧视 (Z-Y 平面，从 +X 看过去)
+
+        每个 2D 子图的 AABB 框是该视角投影下的矩形（轴对齐），
+        让标注员一眼判断点云是否被背景污染、AABB 是否合理。
         """
         try:
             import matplotlib
@@ -546,9 +553,8 @@ class SearchEngine:
         points_world = np.asarray(points_world, dtype=np.float32)
         aabb_min = np.asarray(aabb_min, dtype=np.float32)
         aabb_max = np.asarray(aabb_max, dtype=np.float32)
-
-        fig = plt.figure(figsize=(8, 6))
-        ax = fig.add_subplot(111, projection="3d")
+        center = (aabb_min + aabb_max) * 0.5
+        extent = aabb_max - aabb_min
 
         # 点云下采样，避免渲染过慢
         max_points = 5000
@@ -560,41 +566,90 @@ class SearchEngine:
         else:
             sampled = points_world
 
-        ax.scatter(
-            sampled[:, 0], sampled[:, 1], sampled[:, 2],
-            s=2, c="tab:blue", alpha=0.5, label="object points",
+        ext_cm = extent * 100.0
+        fig = plt.figure(figsize=(14, 11))
+        fig.suptitle(
+            f"3D AABB Multi-View   "
+            f"center=({center[0]:.3f}, {center[1]:.3f}, {center[2]:.3f}) m   "
+            f"extent (W x H x D) = {ext_cm[0]:.1f} x {ext_cm[1]:.1f} x {ext_cm[2]:.1f} cm   "
+            f"num_points={int(points_world.shape[0])}",
+            fontsize=12,
         )
 
-        # AABB 立方体线框
+        # ===== 左上：自由 3D 视角 =====
+        ax3d = fig.add_subplot(2, 2, 1, projection="3d")
+        ax3d.scatter(
+            sampled[:, 0], sampled[:, 1], sampled[:, 2],
+            s=2, c="tab:blue", alpha=0.5, label="points",
+        )
         corners = cls._aabb_corners(aabb_min, aabb_max)
         for i, j in cls._AABB_EDGES:
-            xs = [corners[i, 0], corners[j, 0]]
-            ys = [corners[i, 1], corners[j, 1]]
-            zs = [corners[i, 2], corners[j, 2]]
-            ax.plot(xs, ys, zs, color="green", linewidth=2)
+            ax3d.plot(
+                [corners[i, 0], corners[j, 0]],
+                [corners[i, 1], corners[j, 1]],
+                [corners[i, 2], corners[j, 2]],
+                color="green", linewidth=2,
+            )
+        ax3d.set_xlabel("X (m)")
+        ax3d.set_ylabel("Y (m)")
+        ax3d.set_zlabel("Z (m)")
+        ax3d.set_title("Free 3D view")
+        max_range = float(extent.max()) if float(extent.max()) > 0 else 1.0
+        ax3d.set_xlim(center[0] - max_range, center[0] + max_range)
+        ax3d.set_ylim(center[1] - max_range, center[1] + max_range)
+        ax3d.set_zlim(center[2] - max_range, center[2] + max_range)
+        ax3d.legend(loc="upper right", fontsize=8)
 
-        ax.set_xlabel("X (world)")
-        ax.set_ylabel("Y (world)")
-        ax.set_zlabel("Z (world)")
-        center = (aabb_min + aabb_max) * 0.5
-        extent = aabb_max - aabb_min
-        ax.set_title(
-            f"World AABB\ncenter=({center[0]:.3f},{center[1]:.3f},{center[2]:.3f})  "
-            f"extent=({extent[0]:.3f},{extent[1]:.3f},{extent[2]:.3f})"
+        def _draw_2d_view(ax, pts_a, pts_b, lo_a, hi_a, lo_b, hi_b,
+                          xlabel, ylabel, title, invert_y=False):
+            ax.scatter(pts_a, pts_b, s=2, c="tab:blue", alpha=0.5)
+            # AABB 在该视角的矩形
+            ax.plot(
+                [lo_a, hi_a, hi_a, lo_a, lo_a],
+                [lo_b, lo_b, hi_b, hi_b, lo_b],
+                color="green", linewidth=2,
+            )
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel(ylabel)
+            ax.set_title(title)
+            ax.set_aspect("equal", adjustable="datalim")
+            ax.grid(True, alpha=0.3)
+            if invert_y:
+                ax.invert_yaxis()
+
+        # ===== 右上：俯视 X-Z（看物体的"长 x 深"），从 +Y 看下来 =====
+        ax_top = fig.add_subplot(2, 2, 2)
+        _draw_2d_view(
+            ax_top, sampled[:, 0], sampled[:, 2],
+            aabb_min[0], aabb_max[0], aabb_min[2], aabb_max[2],
+            xlabel="X (m)", ylabel="Z (m, depth)",
+            title=f"Top view (X-Z)  W={ext_cm[0]:.1f}cm  D={ext_cm[2]:.1f}cm",
         )
 
-        # 让坐标轴比例一致
-        max_range = float(extent.max()) if float(extent.max()) > 0 else 1.0
-        mid = center
-        ax.set_xlim(mid[0] - max_range, mid[0] + max_range)
-        ax.set_ylim(mid[1] - max_range, mid[1] + max_range)
-        ax.set_zlim(mid[2] - max_range, mid[2] + max_range)
+        # ===== 左下：正视 X-Y（相机视角），Y 轴反转使图像方向直观 =====
+        ax_front = fig.add_subplot(2, 2, 3)
+        _draw_2d_view(
+            ax_front, sampled[:, 0], sampled[:, 1],
+            aabb_min[0], aabb_max[0], aabb_min[1], aabb_max[1],
+            xlabel="X (m)", ylabel="Y (m, image down)",
+            title=f"Front view (X-Y, camera)  W={ext_cm[0]:.1f}cm  H={ext_cm[1]:.1f}cm",
+            invert_y=True,
+        )
 
-        ax.legend(loc="upper right")
-        fig.tight_layout()
+        # ===== 右下：侧视 Z-Y（看物体的"深 x 高"），从 +X 看过去 =====
+        ax_side = fig.add_subplot(2, 2, 4)
+        _draw_2d_view(
+            ax_side, sampled[:, 2], sampled[:, 1],
+            aabb_min[2], aabb_max[2], aabb_min[1], aabb_max[1],
+            xlabel="Z (m, depth)", ylabel="Y (m, image down)",
+            title=f"Side view (Z-Y)  D={ext_cm[2]:.1f}cm  H={ext_cm[1]:.1f}cm",
+            invert_y=True,
+        )
+
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
 
         out_path = anchor_dir / cls.AABB_3D_FILE_NAME
-        fig.savefig(str(out_path), dpi=120)
+        fig.savefig(str(out_path), dpi=110)
         plt.close(fig)
         return out_path
 
