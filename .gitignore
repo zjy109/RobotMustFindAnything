@@ -18,3 +18,8 @@ rofa/.model_cache/
 # 数据集采集中间产物与发布产物（数据本身不入库）
 RoFA-SemEval/
 scripts/RoFA-SemEval/
+raw_capture/
+dataset/
+
+# uv 虚拟环境
+.venv/

@@ -1,0 +1,38 @@
+[project]
+name = "robotmustfindanything"
+version = "0.1.0"
+description = "RoFA-SemEval 数据集采集 / 标注 / 发布工具集"
+requires-python = ">=3.10"
+
+# 数据集脚本通用依赖（capture / annotate / finalize 三阶段都需要）
+dependencies = [
+    "numpy<2.0",
+    "opencv-python",
+    "pypinyin",
+]
+
+# 可选依赖：按角色 / 阶段安装
+[project.optional-dependencies]
+# 阶段 1 采集：D435 主机
+capture = [
+    "pyrealsense2",
+]
+
+# 阶段 2 标注：点云去噪 + 3D 可视化
+annotate = [
+    "open3d",
+    "matplotlib",
+]
+
+# 阶段 3 发布：仅基础依赖即可，无额外项
+
+# 全部安装（含三阶段所有依赖）
+all = [
+    "pyrealsense2; platform_system != 'Darwin'",  # macOS 不发布 pyrealsense2 wheel，跳过
+    "open3d",
+    "matplotlib",
+]
+
+[tool.uv]
+# 让 sys.path 扫到 rofa 包（已存在的工程代码）以便 annotate_sample.py 复用 SearchEngine
+package = false
