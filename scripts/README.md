@@ -11,13 +11,18 @@ scripts/
 ├── README.md                # 本文件
 ├── requirements.txt         # 依赖清单（按阶段分组）
 ├── dataset_plan.html        # 数据集设计方案（v5）
-├── _dataset_common.py       # 三个脚本共用的工具函数
+├── _dataset_common.py       # 共用工具函数
 ├── capture_sample.py        # 阶段 1：采集
-├── annotate_sample.py       # 阶段 2：标注 + 删减
+├── annotate_sample.py       # 阶段 2：交互式人工标注（一张一审）
+├── auto_prelabel.py         # 阶段 2.5：批量 AI 预标（headless 长跑）
+├── review_auto_labeled.py   # 阶段 2.6：批量后审 AI 预标结果
+├── vlm_seg_client.py        # VLM 服务的 ZMQ 客户端（auto_prelabel/annotate 共用）
 └── finalize_dataset.py      # 阶段 3：完整性校验 + 发布
 ```
 
 ## 三阶段工作流
+
+经典三阶段：
 
 ```
 ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
@@ -25,12 +30,43 @@ scripts/
 │  采集员      │    │  标注员      │    │  数据负责人  │
 │  capture_*   │    │  annotate_*  │    │  finalize_*  │
 └──────────────┘    └──────────────┘    └──────────────┘
-        ↓                  ↓                   ↓
-  raw_capture/       raw_capture/         dataset/
-   pending/         annotated/           samples/
-                    discarded/           dataset.json
-                                         samples.json
-                                         dataset_report.html
+```
+
+**推荐**：阶段 2 的内部走"AI 批量预标 + 后审 + 失败兜底人工"流水线（数据量大时极省时间）：
+
+```
+                    ┌──────────────────────┐
+                    │ 2.5  auto_prelabel.py │  headless 长跑，可 Ctrl-C 续标
+                    │   server 成功 → 移到  │
+        ┌── pending → │   auto_labeled/      │
+        │           │   server 失败 → 留在  │
+        │           │   pending/             │
+        │           └────────┬─────────────┘
+        │                    ↓
+        │           ┌──────────────────────┐
+        │           │ 2.6 review_auto_*    │  3D 多视角审查
+        │           │   y → annotated/     │
+        │           │   n → 退回 pending/   │  ← 让你下一步走人工
+        │           │   d → discarded/      │
+        │           └────────┬─────────────┘
+        │                    │
+        ▼                    ▼
+   ┌──────────────────────────────────────┐
+   │ annotate_sample.py                   │  专门处理 pending/ 里
+   │   人工画 mask（可选 --use-vlm 单张预标）│  AI 啃不动 + 后审退回的硬骨头
+   └────────┬─────────────────────────────┘
+            ↓
+       annotated/  →  阶段 3 发布
+```
+
+样本目录流转：
+
+```
+raw_capture/
+├── pending/           AI 啃不动的 / 后审退回的 / 还没碰过的
+├── auto_labeled/      AI 已预标，等你按 y/n 后审
+├── annotated/         最终成品（人审 OK 的）
+└── discarded/         人为删除的，附 discard_reason.txt
 ```
 
 ## 快速开始
@@ -181,6 +217,59 @@ python scripts/vlm_seg_client.py \
 ```
 
 **降级行为**：当 server 连不上 / 预标超时 / 模型未找到目标 / 返回 mask 尺寸异常时，脚本只会 print 一行警告，然后无缝 fallback 到原本的手画流程。**`--use-vlm` 的存在本身是无副作用的**。
+
+#### 4.2 （强烈推荐）AI 批量预标 + 后审流水线
+
+如果待标数据量大（几百~几千张），逐张交互太慢。建议拆成两步：
+
+**第一步：批量预标**（headless，可以放着跑去吃饭）：
+
+```bash
+# server 必须先起
+python real_main_on_server.py
+
+# 标注端
+python scripts/auto_prelabel.py \
+    --raw-root ./RoFA-SemEval/raw_capture \
+    --vlm-host <server_ip> --vlm-port 5555 \
+    --annotator alice_auto
+```
+
+行为：
+- 遍历 `raw_capture/pending/` 下每个样本，调一次 server。
+- **成功**（出 mask + 反投影 + 去噪 + AABB + 写产物全过）→ 整目录搬到 `raw_capture/auto_labeled/<class>/<sample>/`，`sample.json.annotation.method = "vlm_predicted_pending_review"`。
+- **失败**（超时 / 未找到 / mask 太小 / 点云退化）→ **留在 `pending/` 不动**，写一行原因到 `raw_capture/auto_prelabel.log`。
+- **断点续标**：检测到目标目录已有完整产物会自动跳过，可以放心 Ctrl-C / 重启。
+- 试跑：加 `--max-samples 10` 先看 10 个；加 `--dry-run` 只列样本不调 server。
+
+**第二步：批量后审**（你坐下来快速 y/n）：
+
+```bash
+python scripts/review_auto_labeled.py \
+    --raw-root ./RoFA-SemEval/raw_capture \
+    --annotator alice
+```
+
+每张弹出 3D 多视角决策面板（与 `annotate_sample.py` 完全一致）：
+- **y** → 接受 → 整目录搬到 `annotated/`，`sample.json.method` 改为 `vlm_predicted_accepted`，并写 `reviewer` / `reviewed_at`。
+- **n** → 退回 → 整目录搬回 `pending/`，**清掉 AI 写的产物**（`mask.png` / `aabb.json` / `viz_*.png` 等），样本恢复成"刚采集"状态，等你后续用 `annotate_sample.py` 走人工。
+- **d** → 删除 → 移到 `discarded/`，附 `discard_reason.txt`。
+- **s** → 跳过，留 `auto_labeled/` 下次再审。
+- **q** → 退出。
+
+**第三步：处理失败的硬骨头**（人工画）：
+
+```bash
+python scripts/annotate_sample.py \
+    --raw-root ./RoFA-SemEval/raw_capture \
+    --annotator alice
+```
+
+这时 `pending/` 里只剩两类样本：模型本来就啃不动的 + 后审退回的。逐张人工画即可。
+
+**注意事项**：
+- `auto_prelabel.py` 不会动 `annotated/` 或 `discarded/`。
+- 三个脚本对 `raw_capture/` 的写入是互斥的（同一个样本同一时刻只在一个状态目录里）；不要在不同机器上同时对同一个 raw_capture 跑这些脚本。
 
 ### 5. 阶段 3：发布
 
