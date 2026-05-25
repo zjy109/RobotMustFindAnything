@@ -20,6 +20,16 @@ RoFA-SemEval/
 scripts/RoFA-SemEval/
 raw_capture/
 dataset/
+annotated/
+
+RoFA-SemEval.zip
+annotated.zip
+annotated_few.zip
+
+rofa/det_seg_images*/
+rofa/map/
+rofa/process.log
+rofa/results*.json
 
 # uv 虚拟环境
 .venv/
