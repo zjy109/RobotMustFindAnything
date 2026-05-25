@@ -145,12 +145,14 @@ python scripts/annotate_sample.py \
     --vlm-port 5555
 ```
 
-**slug → prompt 映射**：脚本内置了项目中已有的 4 类（`shuihu→kettle, shuibei→cup, penzai→potted plant, guochan→spatula`）。其他类会自动 fallback 到 `classes.json` 里的 `name_zh`（VLM 8B 一般能理解中文）。也可以用 JSON 文件覆盖：
+**slug → prompt 映射**：RynnBrain 直接支持中文 prompt，所以脚本默认用 `classes.json` 里每类的 `name_zh`（如 `锅铲`、`水壶`）做检索文本，**无需任何额外配置**。如果某一类的中文名描述太宽泛（例如同一个 `name_zh` 下其实包含多个子品类），可以用 JSON 文件单点覆盖：
 
 ```bash
-echo '{"shuihu": "thermos bottle", "guochan": "kitchen spatula"}' > my_prompts.json
+echo '{"shuihu": "不锈钢保温水壶", "guochan": "厨房铲子"}' > my_prompts.json
 python scripts/annotate_sample.py --use-vlm --vlm-prompt-map my_prompts.json ...
 ```
+
+优先级：`--vlm-prompt-map` > `classes.json.name_zh` > slug 本身（兜底）。
 
 **`sample.json` 中的标注溯源**：每条样本会记录 `annotation.method`：
 - `manual_polygon` — 标注员从空白手画
@@ -163,7 +165,7 @@ python scripts/annotate_sample.py --use-vlm --vlm-prompt-map my_prompts.json ...
 python scripts/vlm_seg_client.py \
     --host 192.168.x.y --port 5555 \
     --image raw_capture/pending/guochan/guochan_0001/rgb.jpg \
-    --prompt "spatula" \
+    --prompt "锅铲" \
     --out /tmp/pred_mask.png \
     --out-overlay /tmp/pred_overlay.png
 ```

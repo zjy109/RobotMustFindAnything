@@ -73,18 +73,14 @@ MIN_MASK_PIXELS = 200
 MIN_POINTS_AFTER_DENOISE = 200
 
 # --------------------------------------------------------------------------- #
-# VLM 预标：slug → 模型 prompt 默认映射
+# VLM 预标：slug → 模型 prompt 解析规则
 # --------------------------------------------------------------------------- #
-# RynnBrain server 端模板是英文 prompt（"Localize the EXACT '<obj>' ..."），
-# 所以这里把项目里的中文 / 拼音 slug 映射成英文。
-# 命中规则：先 --vlm-prompt-map JSON、再 DEFAULT_SLUG_TO_PROMPT、最后 fallback 到 slug 本身。
-DEFAULT_SLUG_TO_PROMPT: Dict[str, str] = {
-    "shuihu": "kettle",
-    "shuibei": "cup",
-    "penzai": "potted plant",
-    "guochan": "spatula",
-}
-
+# RynnBrain 支持中文输入，所以默认直接用 classes.json 里的 name_zh
+# （比如 "锅铲"、"水壶"）作为 prompt，不再维护英文映射表。
+# 命中优先级：
+#     1. --vlm-prompt-map JSON 里显式给出的 slug → prompt
+#     2. classes.json 中该 slug 的 name_zh
+#     3. slug 本身（最后兜底，例如 classes.json 缺失时）
 DEFAULT_VLM_HOST = "127.0.0.1"
 DEFAULT_VLM_PORT = 5555
 DEFAULT_VLM_TIMEOUT_MS = 90_000
@@ -1029,8 +1025,8 @@ def main() -> int:
                         help="单次 predict 超时时间（毫秒）")
     parser.add_argument(
         "--vlm-prompt-map", type=str, default=None,
-        help="可选：JSON 文件路径，覆盖默认的 slug→prompt 表。例如 "
-             '\'{"shuihu": "kettle", "guochan": "spatula"}\'',
+        help="可选：JSON 文件路径，覆盖每个 slug 默认使用的 name_zh 作为 prompt。"
+             '例如 \'{"shuihu": "不锈钢保温水壶", "guochan": "厨房铲子"}\'',
     )
 
     args = parser.parse_args()
@@ -1061,26 +1057,30 @@ def main() -> int:
                 f"({_VLM_IMPORT_ERROR})，将 fallback 到纯人工标注。"
             )
         else:
-            # 加载 prompt 映射（默认表 ⊕ 用户覆盖）
-            prompt_map = dict(DEFAULT_SLUG_TO_PROMPT)
+            # ----- 构建 slug → prompt 解析器 -----
+            # 默认：classes.json 里的 name_zh（RynnBrain 直接支持中文）
+            prompt_map: Dict[str, str] = {}
+            for c in classes_doc.get("classes", []):
+                slug = c.get("name")
+                if not slug:
+                    continue
+                name_zh = c.get("name_zh") or slug
+                prompt_map[slug] = str(name_zh)
+
+            # 用户自定义 JSON 覆盖（最高优先级）
             if args.vlm_prompt_map:
                 try:
                     user_map = load_json(Path(args.vlm_prompt_map).expanduser())
                     if isinstance(user_map, dict):
                         prompt_map.update({str(k): str(v) for k, v in user_map.items()})
                         print(f"[annotate] 已加载自定义 prompt 映射: {args.vlm_prompt_map}")
+                    else:
+                        print(f"[annotate] --vlm-prompt-map 不是 JSON object，已忽略")
                 except Exception as exc:
                     print(f"[annotate] 读取 --vlm-prompt-map 失败: {exc}")
 
-            # 也把 classes.json 里的 name_zh 作为 fallback 兜底（如果用户根本没配映射）
-            for c in classes_doc.get("classes", []):
-                slug = c.get("name")
-                if slug and slug not in prompt_map:
-                    # 使用 name_zh，VLM 8B 模型大概率支持中文；不行的话用户可自行 --vlm-prompt-map
-                    name_zh = c.get("name_zh") or slug
-                    prompt_map[slug] = str(name_zh)
-
             def prompt_resolver(slug: str, _m: Dict[str, str] = prompt_map) -> str:
+                # 都没有时回退 slug 本身（极端兜底）
                 return _m.get(slug, slug)
 
             try:

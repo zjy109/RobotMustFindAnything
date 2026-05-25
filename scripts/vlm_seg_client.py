@@ -24,7 +24,7 @@ CLI 自测：
     python scripts/vlm_seg_client.py \\
         --host 127.0.0.1 --port 5555 \\
         --image raw_capture/pending/guochan/guochan_0001/rgb.jpg \\
-        --prompt "spatula" \\
+        --prompt "锅铲" \\
         --out /tmp/vlm_pred_mask.png
 """
 
@@ -67,11 +67,11 @@ class VLMSegClient:
 
     用法（推荐 with）:
         with VLMSegClient(host, port) as client:
-            mask = client.predict(rgb_bgr, prompt="spatula")
+            mask = client.predict(rgb_bgr, prompt="锅铲")
     或：
         client = VLMSegClient(host, port)
         try:
-            mask = client.predict(rgb_bgr, "spatula")
+            mask = client.predict(rgb_bgr, "锅铲")
         finally:
             client.close()
 
