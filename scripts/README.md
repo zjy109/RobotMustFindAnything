@@ -17,7 +17,8 @@ scripts/
 ├── auto_prelabel.py         # 阶段 2.5：批量 AI 预标（headless 长跑）
 ├── review_auto_labeled.py   # 阶段 2.6：批量后审 AI 预标结果
 ├── vlm_seg_client.py        # VLM 服务的 ZMQ 客户端（auto_prelabel/annotate 共用）
-└── finalize_dataset.py      # 阶段 3：完整性校验 + 发布
+├── finalize_dataset.py      # 阶段 3：完整性校验 + 发布
+└── build_subset_dataset.py  # 阶段 4：按目标精度从已发布数据集采样子集
 ```
 
 ## 三阶段工作流
@@ -298,6 +299,35 @@ python scripts/finalize_dataset.py \
 - `dataset/samples/<class>/<sample_id>/` — 完整样本目录（硬链接或拷贝）
 - `dataset/dataset_report.json` + `.html` — 数据集报告
 - `dataset/rejected.csv` — 校验未通过的样本清单（不入最终数据集）
+
+### 6. 阶段 4：按目标精度采样子集
+
+跑完 benchmark 评测拿到 `results.json`（含 `sample_results: [{sample_id, class_name, 3d_iou, ...}]`）后，可以用本脚本从已发布的 `dataset/` 中**按目标精度抽出一个子集**，常见用途是『1000 样本 + IoU≥0.5 命中率 0.836』这种规格化评测集。
+
+```bash
+python scripts/build_subset_dataset.py \
+    --src-dataset RoFA-SemEval/dataset \
+    --results results_0525.json \
+    --dst-dataset RoFA-SemEval/dataset_subset_iou0.5_acc0.836 \
+    --iou-threshold 0.5 --target-n 1000 --target-acc 0.836 \
+    --per-class-quota 25 --seed 42
+```
+
+行为：
+- 从 `results.json` 里按 `class_name` 拆 pos/neg 池（基于 `3d_iou >= --iou-threshold`）。
+- **类配额**：先给每类 `min(--per-class-quota, pool_size)`；剩余名额按各类 pool 余量做最大余数法。少于 quota 的类全收（保证每类都覆盖）。
+- **精度严格命中**：用涨水位算法把每类的 `k_pos` 从 `min_pos` 抬到全局 `target_pos = round(target_n * target_acc)`。最终 `picked_n / picked_pos / picked_neg` 与目标完全相等。
+- **类内挑选**：默认 `--strategy representative` 优先选 IoU 离阈值最远的（pos 池里 IoU 越高越优、neg 池里 IoU 越低越优），便于人工抽查；可用 `--strategy random` 改成纯随机。
+- **样本搬运**：硬链接（不行就拷贝）原 `dataset/samples/<class>/<id>/` 的整个目录到新 `dst_dataset/samples/<class>/<id>/`，跨文件系统会自动 fallback。
+
+新数据集结构与 `dataset/` 完全一致，多 2 个文件：
+- `subset_meta.json` — 子集生成详情（每类配额、命中数、各项参数）
+- `subset_report.html` — 可视化报告
+
+干跑（只算配额、看分布，不真正写数据集）：
+```bash
+python scripts/build_subset_dataset.py ... --dry-run
+```
 
 ## 设计要点
 
