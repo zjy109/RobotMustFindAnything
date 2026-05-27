@@ -25,41 +25,24 @@ SAM2_MODEL_ID = "facebook/sam2.1-hiera-small"
 SAM2_CACHE_DIR_GLOBAL = None  
 
 # 评估配置
-IOU_THRESHOLD_3D = 0.25
-# IOU_THRESHOLD_3D = 0.5
+# IOU_THRESHOLD_3D = 0.25
+IOU_THRESHOLD_3D = 0.5
 
 # 存储与可视化配置
 # DATASET_ROOT = "../RoFA-SemEval/dataset"  # 数据集根目录
 DATASET_ROOT = "../RoFA-SemEval/dataset_subset_iou0.5_acc0.836"  # 数据集根目录
 SAMPLES_JSON_PATH = os.path.join(DATASET_ROOT, "samples.json")
-MAP_DIR = "./map_0527"                 # 构建的 map 文件夹
-PROCESS_LOG_PATH = "process_0527_9.log"  # 逐样本处理日志输出路径
+MAP_DIR = "./map_0527"                 # 复制构建的 map 文件夹
+PROCESS_LOG_PATH = "process_0527.log"  # 逐样本处理日志输出路径
 SAVE_VISUALIZATIONS = True
-VISUALIZATION_DIR = "./det_seg_images_0527_9"
-RESULTS_JSON_PATH = "results_0527_9.json"
+VISUALIZATION_DIR = "./det_seg_images_0527"
+RESULTS_JSON_PATH = "results_0527.json"
 
 # 点云去噪默认参数
-## 0.25阈值下0.837 0527_9
-DEFAULT_SOR_NB = 20
-DEFAULT_SOR_STD = 0.75
-## 0.25阈值下0.842 0527_8
-# DEFAULT_SOR_NB = 30
-# DEFAULT_SOR_STD = 0.75
-## 0.25阈值下0.816 0527_7
-# DEFAULT_SOR_NB = 15
-# DEFAULT_SOR_STD = 1.0
-## 0.25阈值下0.828 0527_6 
-# DEFAULT_SOR_NB = 20
-# DEFAULT_SOR_STD = 1.0
-## 0.25阈值下0.829  0527_5 
-# DEFAULT_SOR_NB = 30
-# DEFAULT_SOR_STD = 1.0
-## 0.25阈值下0.801  0527_4
-# DEFAULT_SOR_NB = 30
-# DEFAULT_SOR_STD = 2.0
-## 0.25阈值下0.862   0527_3
-# DEFAULT_SOR_NB = 5
-# DEFAULT_SOR_STD = 0.5
+DEFAULT_SOR_NB = 30
+DEFAULT_SOR_STD = 2.0
+DEFAULT_DBSCAN_EPS = 0.03
+DEFAULT_DBSCAN_MIN_POINTS = 50
 
 
 # ================= 辅助函数 =================
@@ -122,11 +105,12 @@ def _numpy_fallback_denoise(points_cam: np.ndarray, info: Dict[str, Any]) -> Tup
     info["fallback_warning"] = "Open3D not installed. Returning raw points."
     return points_cam.astype(np.float32), info
 
-
 def denoise_pointcloud(
     points_cam: np.ndarray,
     sor_nb: int = DEFAULT_SOR_NB,
     sor_std: float = DEFAULT_SOR_STD,
+    dbscan_eps: float = DEFAULT_DBSCAN_EPS,
+    dbscan_min_points: int = DEFAULT_DBSCAN_MIN_POINTS,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     info: Dict[str, Any] = {
         "input_points": int(points_cam.shape[0]),
@@ -134,29 +118,51 @@ def denoise_pointcloud(
         "params": {
             "sor_nb": sor_nb,
             "sor_std": sor_std,
+            "dbscan_eps": dbscan_eps,
+            "dbscan_min_points": dbscan_min_points,
         },
     }
 
     try:
-        import open3d as o3d
-    except ImportError:
-        info["method"] = "numpy_fallback (no-op)"
-        info["fallback_warning"] = "Open3D not installed. Returning raw points."
-        return points_cam.astype(np.float32), info
+        import open3d as o3d  # type: ignore
+    except Exception as exc:  # pragma: no cover
+        return _numpy_fallback_denoise(points_cam, info)
 
-    info["method"] = "open3d_sor"
+    info["method"] = "open3d_sor + dbscan"
 
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(points_cam.astype(np.float64))
 
-    # 统计离群点滤波 (SOR)
+    # 1) 统计离群点 (SOR)
     pcd_clean, sor_idx = pcd.remove_statistical_outlier(
         nb_neighbors=int(sor_nb), std_ratio=float(sor_std)
     )
     info["after_sor"] = int(np.asarray(pcd_clean.points).shape[0])
 
-    cleaned = np.asarray(pcd_clean.points, dtype=np.float32)
-    return cleaned, info
+    # 2) DBSCAN 选最大簇
+    labels = np.array(
+        pcd_clean.cluster_dbscan(
+            eps=float(dbscan_eps), min_points=int(dbscan_min_points), print_progress=False
+        )
+    )
+    if labels.size == 0:
+        info["clusters"] = 0
+        return np.asarray(pcd_clean.points, dtype=np.float32), info
+
+    valid_labels = labels[labels >= 0]
+    if valid_labels.size == 0:
+        info["clusters"] = 0
+        info["dbscan_fallback"] = "no_valid_cluster"
+        return np.asarray(pcd_clean.points, dtype=np.float32), info
+
+    counts = np.bincount(valid_labels)
+    largest = int(np.argmax(counts))
+    keep_mask = labels == largest
+    cleaned = np.asarray(pcd_clean.points)[keep_mask]
+    info["clusters"] = int(counts.size)
+    info["largest_cluster"] = int(counts[largest])
+    
+    return cleaned.astype(np.float32), info
 
 def mask_to_3d_aabb(depth_map: np.ndarray, mask: np.ndarray, intrinsics: Dict[str, float]) -> Optional[List[float]]:
     fx, fy = intrinsics["fx"], intrinsics["fy"]

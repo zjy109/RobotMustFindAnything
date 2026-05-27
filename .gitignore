@@ -27,8 +27,9 @@ annotated.zip
 annotated_few.zip
 
 rofa/det_seg_images*/
-rofa/map/
-rofa/process.log
+rofa/map*/
+rofa/process*.log
+rofa/process_result*.py
 rofa/results*.json
 
 # uv 虚拟环境
