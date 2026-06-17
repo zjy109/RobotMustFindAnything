@@ -9,6 +9,8 @@ RobotMustFindAnything 是一个机器人感知项目，集成了 RealSense 深�
 ```
 RobotMustFindAnything/
 ├── main.py                 # 主程序入口
+├── real_main_on_robot.py   # 启动机器人端的交互式语义地图构建和检索程序
+├── real_main_on_server.py  # 启动vlm服务端并设置相关端口信息
 ├── README.md               # 本文件 - 环境配置说明
 ├── doc/                    # 各功能模块的详细使用文档
 │   ├── realsense.md        # RealSense 相机使用说明
@@ -21,6 +23,8 @@ RobotMustFindAnything/
     ├── llm/                # LLM 推理模块（基于 SiliconFlow）
     ├── dinox/              # DINO-X 模块（基于 deepdataspace的DINO-X 开放平台）
     └── ros_ws/             # ROS2 工作空间 (Livox 驱动 + FAST-LIO2)
+    └── roimap/             # 环境语义检索机器人端（维护语义地图，发起检索请求）
+    └── vlm_server/         # 环境语义检索服务端（基于vlm模型）
 ```
 
 ## 环境配置
@@ -30,7 +34,7 @@ RobotMustFindAnything/
 创建并激活名为 `rofa` 的 Conda 环境：
 
 ```bash
-conda create -n rofa python=3.10
+conda create -n rofa python=3.10.19
 conda activate rofa
 ```
 
@@ -38,6 +42,22 @@ conda activate rofa
 
 ```bash
 pip install pyrealsense2 "numpy<2.0" opencv-python scipy openai
+```
+
+VLM服务端（rynnbrain模型依赖 + socket包） 环境配置
+```bash
+pip install --index-url "https://download.pytorch.org/whl/cu121" \
+        -i https://pypi.tuna.tsinghua.edu.cn/simple \
+        torch==2.5.1 torchvision==0.20.1
+pip install numpy<2.0 opencv-python>=4.8 Pillow>=10.0 tqdm>=4.65 -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install transformers==4.57.1 accelerate==1.12.0 huggingface-hub>=0.20 safetensors>=0.4 -i https://pypi.tuna.tsinghua.edu.cn/simple
+conda install pyzmq
+```
+
+rynnbrain 权重下载 (Modelscope)
+
+```bash
+modelscope download --model DAMO_Academy/RynnBrain-8B --local_dir ./models/RynnBrain-8B
 ```
 
 SAM3 环境配置
