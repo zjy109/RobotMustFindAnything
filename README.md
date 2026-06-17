@@ -2,7 +2,7 @@
 
 ## 项目简介
 
-RobotMustFindAnything 是一个机器人感知项目，集成了 RealSense 深度相机、ArUco 标记检测以及 Livox 激光雷达 + FAST-LIO2 建图等功能模块。
+RobotMustFindAnything 是一个机器人感知项目，集成了 RealSense 深度相机、ArUco 标记检测以及 roimap语义地图构建 和 VLM语义检索 等功能模块。
 
 ## 项目结构
 
