@@ -101,16 +101,35 @@ fi
 
 # ===== Step 3: PyTorch（GPU 或 CPU） =====
 log "${BOLD}[3/4] PyTorch${RESET}"
+# 重要：torch 的 GPU/CPU wheel 只在 PyTorch 官方源或其镜像上有；
+# 不能用 `-i 清华源` 覆盖 --index-url（-i 是 --index-url 的简写，后者会被覆盖，
+# 导致从普通 PyPI 镜像拉 torch，常见 403 / 拉到错误的 CUDA 版本）。
+# 这里按「官方源 -> 阿里云 PyTorch 镜像」顺序回退。
 if [[ $CPU_ONLY -eq 1 ]]; then
     log "  安装 CPU 版 PyTorch（仅本地调试可用，运行测试必须用 GPU）"
-    pip install --index-url https://download.pytorch.org/whl/cpu \
-        -i https://pypi.tuna.tsinghua.edu.cn/simple \
-        torch==2.5.1 torchvision==0.20.1
+    TORCH_VARIANT="cpu"
 else
     log "  安装 GPU 版 PyTorch (CUDA $TORCH_CUDA)"
-    pip install --index-url "https://download.pytorch.org/whl/$TORCH_CUDA" \
-        -i https://pypi.tuna.tsinghua.edu.cn/simple \
-        torch==2.5.1 torchvision==0.20.1
+    TORCH_VARIANT="$TORCH_CUDA"
+fi
+
+TORCH_SOURCES=(
+    "https://download.pytorch.org/whl/${TORCH_VARIANT}"
+    "https://mirrors.aliyun.com/pytorch-wheels/${TORCH_VARIANT}"
+)
+torch_ok=0
+for src in "${TORCH_SOURCES[@]}"; do
+    log "  尝试 PyTorch 源: $src"
+    if pip install --index-url "$src" torch==2.5.1 torchvision==0.20.1; then
+        torch_ok=1
+        break
+    fi
+    warn "  该源安装失败，尝试下一个 ..."
+done
+if [[ $torch_ok -ne 1 ]]; then
+    err "PyTorch 安装失败（所有源都失败）。请检查网络，或手动安装后重跑 --skip-conda："
+    err "    pip install --index-url https://download.pytorch.org/whl/${TORCH_VARIANT} torch==2.5.1 torchvision==0.20.1"
+    exit 1
 fi
 
 # 校验 torch 安装
@@ -124,8 +143,11 @@ PY
 
 # ===== Step 4: 业务依赖 =====
 log "${BOLD}[4/4] 业务 Python 依赖${RESET}"
-pip install -U pip setuptools wheel -i https://pypi.tuna.tsinghua.edu.cn/simple
-pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+# 主用清华源，腾讯云源作为 extra（个别大 wheel 某个镜像 403 时可自动换源）。
+PIP_MIRROR="https://pypi.tuna.tsinghua.edu.cn/simple"
+PIP_EXTRA="https://mirrors.cloud.tencent.com/pypi/simple"
+pip install -U pip setuptools wheel -i "$PIP_MIRROR" --extra-index-url "$PIP_EXTRA"
+pip install -r requirements.txt -i "$PIP_MIRROR" --extra-index-url "$PIP_EXTRA"
 
 # ===== 完成 =====
 log ""
