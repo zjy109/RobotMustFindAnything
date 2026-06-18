@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -208,6 +209,22 @@ def build_app(capture_dir: Path, cuda_devices: str):
     return demo
 
 
+def _ensure_localhost_no_proxy(host: str) -> None:
+    """让本机地址绕过 HTTP 代理。
+
+    很多服务器设了 http_proxy/https_proxy，gradio 启动时对 127.0.0.1 的自检请求
+    会被代理拦截而报 503。这里把 localhost / 回环地址加入 no_proxy。
+    """
+    targets = {"localhost", "127.0.0.1", "::1", host}
+    for var in ("no_proxy", "NO_PROXY"):
+        cur = os.environ.get(var, "")
+        items = [s.strip() for s in cur.split(",") if s.strip()]
+        for t in targets:
+            if t and t not in items:
+                items.append(t)
+        os.environ[var] = ",".join(items)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="采集数据可视化检索 UI（Web 版）")
     ap.add_argument("--capture-dir", type=str, default="./captures",
@@ -226,6 +243,9 @@ def main() -> int:
     except ImportError:
         print("[error] 未安装 gradio。请先安装：pip install gradio", file=sys.stderr)
         return 2
+
+    # 关键：避免本地自检请求走代理导致 503
+    _ensure_localhost_no_proxy(args.host)
 
     capture_dir = Path(args.capture_dir).expanduser().resolve()
     demo = build_app(capture_dir, args.cuda_devices)

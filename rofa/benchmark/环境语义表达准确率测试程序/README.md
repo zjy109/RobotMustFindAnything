@@ -371,7 +371,15 @@ python main.py \
 
 ### Q1: 安装时 `libGL.so.1: cannot open shared object file`
 
+本项目默认用 `opencv-python-headless`，无头服务器一般不会再有此问题。如果你的环境装的是
+非 headless 的 `opencv-python` 又缺系统库，二选一：
+
 ```bash
+# 方案 A（推荐，无需 root）：换 headless 版
+pip uninstall -y opencv-python opencv-contrib-python
+pip install "opencv-python-headless>=4.8"
+
+# 方案 B（有 sudo）：装系统库
 sudo apt-get install -y libgl1 libglib2.0-0
 ```
 

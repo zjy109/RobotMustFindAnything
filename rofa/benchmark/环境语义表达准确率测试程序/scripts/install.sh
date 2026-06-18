@@ -69,10 +69,10 @@ if command -v apt-get &>/dev/null && [[ $EUID -eq 0 || -n "${SUDO_USER:-}" ]]; t
         wget curl ca-certificates git || warn "apt-get 部分失败，但通常不致命"
 else
     warn "  非 root 或 apt-get 不可用，跳过系统包安装。"
-    warn "  如果运行时报 'libGL.so.1' 之类错，请手动安装："
-    warn "    sudo apt-get install -y libgl1 libglib2.0-0"
-    warn "  如果 ui.py 报 'No module named _tkinter'，请安装：sudo apt-get install -y python3-tk"
-    warn "  如果 RealSense 采集报 USB/libusb 相关错，请安装：sudo apt-get install -y libusb-1.0-0"
+    warn "  本项目用 opencv-python-headless，无头服务器通常无需任何系统库即可运行。"
+    warn "  若仍报 'libGL.so.1' 之类错：sudo apt-get install -y libgl1 libglib2.0-0"
+    warn "  如果 ui.py(桌面版) 报 'No module named _tkinter'：sudo apt-get install -y python3-tk"
+    warn "  如果 RealSense 采集报 USB/libusb 相关错：sudo apt-get install -y libusb-1.0-0"
 fi
 
 # ===== Step 2: conda 环境 =====

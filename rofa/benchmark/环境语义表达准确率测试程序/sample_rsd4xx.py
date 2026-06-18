@@ -139,6 +139,23 @@ def main() -> int:
     if interactive:
         import cv2 as _cv2  # noqa: WPS433
         cv2 = _cv2
+        # headless 版 OpenCV（无 GUI）无法弹预览窗，提前检测并给出清晰指引
+        try:
+            cv2.namedWindow("__probe__", cv2.WINDOW_AUTOSIZE)
+            cv2.destroyWindow("__probe__")
+        except Exception:
+            pipeline.stop()
+            print(
+                "[error] 当前 OpenCV 不支持窗口显示（headless 版），无法使用交互预览。\n"
+                "  在无显示/服务器环境，请改用自动或 .bag 回放模式：\n"
+                f"    python sample_rsd4xx.py --output {args.output} --num 10 --auto --interval 1.0\n"
+                f"    python sample_rsd4xx.py --from-bag <file.bag> --output {args.output} --num 10\n"
+                "  若确实要在带显示器的机器上用预览窗，请安装非 headless 版：\n"
+                "    pip uninstall -y opencv-python-headless && pip install \"opencv-python>=4.8\"\n"
+                "  （并确保系统有 libgl1：sudo apt-get install -y libgl1 libglib2.0-0）",
+                file=sys.stderr,
+            )
+            return 2
 
     saved = 0
     frame_idx = 0
