@@ -1,0 +1,26 @@
+[project]
+name = "rofa-bench"
+version = "1.0.0"
+description = "环境语义表达准确率测试程序"
+requires-python = ">=3.10"
+
+dependencies = [
+    "numpy<2.0",
+    "opencv-python>=4.8",
+    "Pillow>=10.0",
+    "tqdm>=4.65",
+    "transformers>=4.45",
+    "accelerate>=0.30",
+    "huggingface-hub>=0.20",
+    "safetensors>=0.4",
+    "sentencepiece>=0.1.99",
+    "open3d>=0.17",
+]
+
+[project.optional-dependencies]
+# torch 单独装（要选 CUDA 版本），不放在主 dependencies 里
+gpu = []
+cpu = []
+
+[tool.uv]
+package = false

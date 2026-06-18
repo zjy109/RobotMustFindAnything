@@ -1,0 +1,26 @@
+# 业务依赖（PyTorch 通过 install.sh 单独装，因为要选 CUDA 版本）
+numpy<2.0
+opencv-python>=4.8
+Pillow>=10.0
+tqdm>=4.65
+transformers==4.57.1
+accelerate==1.12.0
+huggingface-hub>=0.20      # RynnBrain-8B / SAM2 模型自动下载
+safetensors>=0.4
+sentencepiece>=0.1.99
+
+# 点云去噪（强烈建议；缺失会自动退化为直通）
+# 同时被 ui.py 用于三维点云 + AABB 可视化
+open3d>=0.17
+
+# RealSense D4xx 采集（sample_rsd4xx.py 需要）。仅采集端依赖，评测端不依赖。
+# 官方 wheel 覆盖 Linux x86_64 / Windows；其它平台请参考 RealSense SDK 文档自行安装。
+pyrealsense2>=2.54 ; platform_system == "Linux"
+pyrealsense2>=2.54 ; platform_system == "Windows"
+
+# 网络/下载工具
+requests>=2.31
+
+# 可选：ModelScope 下载源（runner 默认会先用它下载模型；缺失时 download_models.py 会自动 pip 安装）
+modelscope>=1.20
+

@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+
+# 模型权重 / 缓存（一般几个 G 甚至几十 G，绝对不入库）
+models/
+.model_cache/
+
+# 运行输出
+run_output/
+run_*/
+results*.json
+results*.json.tmp
+*.log
+visualizations/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# 数据集（如果不小心放本目录里也别提交）
+dataset_*/
+RoFA-SemEval/
