@@ -21,6 +21,10 @@ pyrealsense2>=2.54 ; platform_system == "Windows"
 # 网络/下载工具
 requests>=2.31
 
+# Web 版 UI（ui_web.py）：跳板机/无显示远程服务器用浏览器可视化，无需 X11。
+# 本地桌面用 Tkinter 版 ui.py 则不需要它。
+gradio>=4.0
+
 # 可选：ModelScope 下载源（runner 默认会先用它下载模型；缺失时 download_models.py 会自动 pip 安装）
 modelscope>=1.20
 

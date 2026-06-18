@@ -14,8 +14,9 @@
 2. [前置要求](#2-前置要求)
 3. [采集数据 `sample_rsd4xx.py`](#3-采集数据-sample_rsd4xxpy)
 4. [可视化检索 `ui.py`](#4-可视化检索-uipy)
-5. [数据格式与坐标系约定](#5-数据格式与坐标系约定)
-6. [常见问题](#6-常见问题)
+5. [远程服务器 / 跳板机可视化（Web 版 `ui_web.py`）](#45-远程服务器--跳板机可视化web-版-ui_webpy)
+6. [数据格式与坐标系约定](#5-数据格式与坐标系约定)
+7. [常见问题](#6-常见问题)
 
 ---
 
@@ -106,6 +107,44 @@ captures/
 > 深度图已通过 `rs.align(rs.stream.color)` **对齐到彩色坐标系**，
 > 因此 `rgb.jpg` 与 `depth.png` 像素一一对应，可直接配合彩色内参做反投影。
 
+### 3.1 没有真机？用官方 `.bag` 录制回放（无需任何硬件）
+
+pyrealsense2 可以把 RealSense `.bag` 录制文件当成一台「虚拟相机」回放，
+内参 / 深度 / 对齐与真机完全一致，因此**没有相机也能跑通整条链路**。
+
+下载 Intel 官方样例 `.bag`（任选其一）：
+
+```bash
+# Intel 官方样例数据列表：
+#   https://github.com/IntelRealSense/librealsense/blob/master/doc/sample-data.md
+wget https://librealsense.intel.com/rs-tests/TestData/outdoors.bag
+# 其它示例：stairs.bag / depth_under_water.bag 等（同一目录下）
+```
+
+> 也可以用别人电脑上的 `realsense-viewer` 录一段 `.bag` 发给你；
+> 或从 Intel 论坛 / Roboflow / Kaggle 搜索 "realsense bag" 获取社区录制。
+
+回放采集成样本：
+
+```bash
+python sample_rsd4xx.py --from-bag ./outdoors.bag --output ./captures --num 10
+# --bag-stride 控制每隔多少帧采一帧（默认 30）
+```
+
+然后照常 `python ui.py --capture-dir ./captures` 即可。
+
+> 注意：`.bag` 里不一定同时含彩色与深度流；若只有深度，`ui.py` 仍可反投影出 AABB，
+> 但 RynnBrain 需要彩色图才能定位，建议选含 **Color + Depth** 的录制（如 `outdoors.bag`）。
+
+### 3.2 已有 RGB+深度图片，想直接喂给 UI？
+
+如果你手上是普通的 RGBD 数据集（一对 `rgb.png` + `depth.png` + 内参，如
+TUM RGB-D / NYU Depth V2 / Redwood），只要按
+[§5 数据格式](#5-数据格式与坐标系约定) 摆成
+`samples/<id>/{rgb.jpg, depth.png, intrinsics.json, pose.json}` 并写一个
+`samples.json` 索引即可被 `ui.py` 读取（`pose.json` 可随便给个单位矩阵）。
+如需要，我可以补一个「通用 RGBD → 采集样本」的转换脚本。
+
 ---
 
 ## 4. 可视化检索 `ui.py`
@@ -150,6 +189,47 @@ python ui.py --capture-dir ./captures --cuda-devices 0
 - **后台线程推理**：界面不卡顿，状态栏实时显示进度。
 - **未找到目标**：若 RynnBrain 判定物体不存在或无法定位，会提示「未找到」，不画框。
 - 反投影 / 去噪参数与评测一致，保证结果可对照。
+
+---
+
+## 4.5 远程服务器 / 跳板机可视化（Web 版 `ui_web.py`）
+
+如果模型跑在**通过跳板机连接的无显示 GPU 服务器**上，桌面版 `ui.py`（Tkinter + Open3D）
+走 X11 转发通常很卡、且 Open3D 的 OpenGL 几乎无法经堡垒机转发。**推荐用 Web 版**：
+服务器起一个本地 Web 服务，你用 SSH 端口转发映射到本地，浏览器打开即可，
+**完全不依赖 X11 / 服务器显示 / 服务器 OpenGL**（3D 点云在你本地浏览器里用 three.js 渲染）。
+
+### 步骤
+
+1）服务器上启动（监听本地回环，最安全）：
+
+```bash
+python ui_web.py --capture-dir ./captures --port 7860
+```
+
+2）本地做端口转发（一条命令穿透跳板机，`-J` 即 ProxyJump）：
+
+```bash
+ssh -N -L 7860:localhost:7860 -J user@<跳板机> user@<GPU服务器>
+```
+
+> 多级跳板：`-J user@bastion1,user@bastion2`。
+> 若用 `~/.ssh/config` 配了 `ProxyJump`，直接 `ssh -N -L 7860:localhost:7860 <GPU服务器别名>`。
+
+3）本地浏览器打开 **http://localhost:7860**，操作与桌面版一致：选样本 → 输入物体 → 查找。
+   - 2D 叠加（绿框 bbox + 半透明蓝掩码）直接出图；
+   - 「3D 点云 + AABB」面板在浏览器里可旋转缩放（场景点云 + 目标点云红 + AABB 红框）。
+
+### 对比
+
+| | `ui.py`（桌面/Tkinter） | `ui_web.py`（浏览器/Gradio） |
+|---|---|---|
+| 适用 | 本地有显示器 / 直连有桌面的机器 | 跳板机 + 无显示远程服务器 ✅ |
+| 依赖 | Tkinter（标准库）+ open3d | gradio（+ open3d 仅用于导出 3D 预览） |
+| 3D 显示 | 服务器弹 Open3D 窗口（需本地显示/GL） | 本地浏览器 three.js 渲染，无需服务器 GL |
+
+> 安全建议：默认 `--host 127.0.0.1`，只能本机访问，靠 SSH 转发暴露给你自己最安全。
+> 不要随意用 `--host 0.0.0.0` 或 `--share` 把服务直接挂到公网。
 
 ---
 

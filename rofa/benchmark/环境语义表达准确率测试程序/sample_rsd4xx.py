@@ -16,7 +16,14 @@
     # 无人值守，自动采集 20 帧，每帧间隔 1 秒（无窗口，适合 SSH/无显示环境）
     python sample_rsd4xx.py --output ./captures --num 20 --auto --interval 1.0
 
+    # 没有真机？用 RealSense 官方 .bag 录制文件回放采集（无需任何硬件）
+    python sample_rsd4xx.py --from-bag ./sample.bag --output ./captures --num 10
+
 依赖：pyrealsense2（见 requirements.txt / install.sh）。
+
+获取测试用 .bag（无相机时）：
+    Intel 官方样例数据 https://github.com/IntelRealSense/librealsense/blob/master/doc/sample-data.md
+    例如： wget https://librealsense.intel.com/rs-tests/TestData/outdoors.bag
 """
 from __future__ import annotations
 
@@ -79,13 +86,18 @@ def main() -> int:
     ap.add_argument("--height", type=int, default=480, help="分辨率高（默认 480）")
     ap.add_argument("--fps", type=int, default=30, help="帧率（默认 30）")
     ap.add_argument("--warmup", type=int, default=15,
-                    help="启动后丢弃的预热帧数，等待自动曝光稳定（默认 15）")
+                    help="启动后丢弃的预热帧数，等待自动曝光稳定（默认 15；bag 回放时忽略）")
     ap.add_argument("--seed", type=int, default=None,
                     help="随机位姿种子（可选，便于复现）")
+    ap.add_argument("--from-bag", type=str, default=None,
+                    help="从 RealSense .bag 录制文件回放采集（无需真机）；指定后忽略预览窗")
+    ap.add_argument("--bag-stride", type=int, default=30,
+                    help="--from-bag 模式下每隔多少帧采一帧（默认 30，即约每秒 1 帧）")
     args = ap.parse_args()
 
     rs = _import_realsense()
     rng = np.random.default_rng(args.seed)
+    from_bag = args.from_bag is not None
 
     capture_dir = Path(args.output).expanduser().resolve()
     capture_dir.mkdir(parents=True, exist_ok=True)
@@ -94,8 +106,17 @@ def main() -> int:
     # ---- 配置并启动 pipeline ----
     pipeline = rs.pipeline()
     config = rs.config()
-    config.enable_stream(rs.stream.depth, args.width, args.height, rs.format.z16, args.fps)
-    config.enable_stream(rs.stream.color, args.width, args.height, rs.format.bgr8, args.fps)
+    if from_bag:
+        bag_path = Path(args.from_bag).expanduser().resolve()
+        if not bag_path.exists():
+            print(f"[error] .bag 文件不存在: {bag_path}", file=sys.stderr)
+            return 2
+        # 让设备来源于录制文件；流由 bag 内容决定，不手动 enable_stream
+        config.enable_device_from_file(str(bag_path), repeat_playback=False)
+        print(f"[capture] 从 .bag 回放: {bag_path}")
+    else:
+        config.enable_stream(rs.stream.depth, args.width, args.height, rs.format.z16, args.fps)
+        config.enable_stream(rs.stream.color, args.width, args.height, rs.format.bgr8, args.fps)
 
     print("[capture] 启动 RealSense pipeline ...")
     profile = pipeline.start(config)
@@ -104,27 +125,49 @@ def main() -> int:
     align = rs.align(rs.stream.color)  # 把深度对齐到彩色
     print(f"[capture] depth_scale = {depth_scale} (米/单位)")
 
-    # 交互式预览需要 cv2 GUI
+    if from_bag:
+        # 非实时回放：逐帧处理，不丢帧
+        try:
+            playback = profile.get_device().as_playback()
+            playback.set_real_time(False)
+        except Exception:
+            pass
+
+    # 模式：bag 回放 / 自动定时 / 交互预览
+    interactive = (not from_bag) and (not args.auto)
     cv2 = None
-    if not args.auto:
+    if interactive:
         import cv2 as _cv2  # noqa: WPS433
         cv2 = _cv2
 
     saved = 0
+    frame_idx = 0
     try:
-        # 预热：丢弃前若干帧
-        for _ in range(max(0, args.warmup)):
-            pipeline.wait_for_frames()
+        # 预热：丢弃前若干帧（bag 回放时帧数有限，跳过预热）
+        if not from_bag:
+            for _ in range(max(0, args.warmup)):
+                pipeline.wait_for_frames()
 
-        if not args.auto:
+        if interactive:
             print("[capture] 交互模式：在预览窗口中按 <空格>/<回车> 采集一帧，按 q/ESC 退出。")
+        elif from_bag:
+            print(f"[capture] bag 回放模式：每隔 {args.bag_stride} 帧采一帧。")
 
         last_auto = 0.0
         while True:
             if args.num >= 0 and saved >= args.num:
                 break
 
-            frames = pipeline.wait_for_frames()
+            if from_bag:
+                # 回放结束时 try_wait_for_frames 返回 False
+                ok, frames = pipeline.try_wait_for_frames(2000)
+                if not ok:
+                    print("[capture] .bag 已播放完毕。")
+                    break
+            else:
+                frames = pipeline.wait_for_frames()
+
+            frame_idx += 1
             aligned = align.process(frames)
             depth_frame = aligned.get_depth_frame()
             color_frame = aligned.get_color_frame()
@@ -136,7 +179,9 @@ def main() -> int:
             depth_image = np.asanyarray(depth_frame.get_data()).astype(np.uint16)
 
             do_capture = False
-            if args.auto:
+            if from_bag:
+                do_capture = (frame_idx % max(1, args.bag_stride) == 0)
+            elif args.auto:
                 now = time.time()
                 if now - last_auto >= args.interval:
                     do_capture = True

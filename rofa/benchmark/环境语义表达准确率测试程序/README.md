@@ -300,7 +300,8 @@ python main.py \
 ├── main.py                 入口：python main.py --dataset ...
 │
 ├── sample_rsd4xx.py        采集：RealSense D4xx 采 RGBD + 随机位姿 → 样本目录
-├── ui.py                   可视化检索 UI：读采集数据，输入物体名 → bbox+掩码+AABB
+├── ui.py                   可视化检索 UI（桌面/Tkinter）：bbox+掩码+AABB
+├── ui_web.py               可视化检索 UI（Web/Gradio）：跳板机/无显示远程服务器用
 │
 ├── src/benchmark/          核心代码（按职责拆分）
 │   ├── __init__.py
