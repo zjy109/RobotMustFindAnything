@@ -300,8 +300,7 @@ python main.py \
 ├── main.py                 入口：python main.py --dataset ...
 │
 ├── sample_rsd4xx.py        采集：RealSense D4xx 采 RGBD + 随机位姿 → 样本目录
-├── ui.py                   可视化检索 UI（桌面/Tkinter）：bbox+掩码+AABB
-├── ui_web.py               可视化检索 UI（Web/Gradio）：跳板机/无显示远程服务器用
+├── ui.py                   可视化检索 UI（Web/Gradio）：输入物体名 → 自动扫描全部样本 → bbox+掩码+AABB
 │
 ├── src/benchmark/          核心代码（按职责拆分）
 │   ├── __init__.py
@@ -481,35 +480,43 @@ python sample_rsd4xx.py --output ./captures --num 20 --auto --interval 1.0
 > 说明：采集样本用随机模拟的 `pose.json` 取代了评测数据集里的 GT `aabb.json`，
 > 因此不参与「3D IoU 准确率」评测；它服务于下面的交互检索可视化。
 
-### 11.2 可视化检索 `ui.py`
+### 11.2 可视化检索 `ui.py`（Web 版）
+
+`ui.py` 是单文件 Gradio 网页应用。**SSH 到服务器 → 运行 → 浏览器打开网址**即可：
 
 ```bash
 python ui.py --capture-dir ./captures
-# 指定显卡： python ui.py --capture-dir ./captures --cuda-devices 0
+# 指定显卡 / 端口
+python ui.py --capture-dir ./captures --cuda-devices 0 --port 7860
 ```
 
-界面操作：
+终端打印 `http://127.0.0.1:7860`，浏览器打开。**无需选样本**——只输入要找的物体：
 
-1. 左侧选择一个采集样本（自动显示 RGB）；
-2. 在「查找物体」输入框输入名称（支持中文，如 `水杯`），点「查找」或回车；
-3. 后台跑 **RynnBrain 定位 → SAM2 分割 → 深度反投影 + SOR 去噪 → AABB**，
-   结果直接叠加在图上：绿框=2D bbox，半透明蓝=掩码；
-4. 右下信息区显示 **相机系 3D AABB** 与 **应用随机位姿后的世界系 3D AABB**（min/max/尺寸）；
-5. 点「查看3D点云」用 Open3D 弹窗查看场景点云 + 目标点云（红）+ AABB（红框）。
+1. 输入物体名称（支持中文，如 `水杯`），点「检索全部样本」（或回车）；
+2. 系统**自动扫描采集目录下所有样本**，对每个跑 RynnBrain 定位 → SAM2 分割 → 深度反投影 → AABB；
+3. 命中的样本以图集返回（叠加 绿框=2D bbox、半透明蓝=掩码）；
+4. 点击任意命中结果 → 显示其 **相机系 / 世界系 3D AABB**（min/max/尺寸）+ 浏览器内可旋转的 **3D 点云 + AABB（红框）**。
 
-> - 模型在**首次检索时惰性加载**（与评测共用 `model_resolver`，自动下载到 `./models/`），
->   首次点击「查找」会稍慢，之后复用。
-> - 推理在后台线程进行，界面不卡顿。
+远程访问（直接 SSH 连服务器，用端口转发把网页带回本地浏览器）：
+
+```bash
+# 在本地电脑执行，保持窗口开着
+ssh -N -L 7860:localhost:7860 root@<服务器IP>
+# 然后本地浏览器打开 http://localhost:7860
+```
+
+> - 纯浏览器渲染，**不依赖服务器显示 / X11 / OpenGL**；3D 点云用浏览器端 three.js 渲染。
+> - 模型**首次检索时惰性加载**（与评测共用 `model_resolver`，自动下载到 `./models/`）。
 > - 反投影与去噪参数与评测一致（`SOR_NB=20, SOR_STD=0.75`），见 `src/benchmark/config.py`。
 
 ### 11.3 依赖
 
 `requirements.txt` 已包含：
 
+- `gradio`（Web UI `ui.py`）
 - `pyrealsense2`（采集端；Linux x86_64 / Windows 有官方 wheel）
-- `open3d`（UI 的三维点云显示，同时也是评测的点云去噪库）
-- UI 用的 Tkinter 是 Python 标准库；若系统 Python 报 `No module named _tkinter`，
-  执行 `sudo apt-get install -y python3-tk`（`install.sh` 已自动尝试安装）。
+- `open3d`（导出三维点云供浏览器预览，同时也是评测的点云去噪库）
+- `opencv-python-headless`（无头服务器无需系统 `libGL`）
 
 ---
 

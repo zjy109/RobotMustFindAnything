@@ -13,10 +13,9 @@
 1. [流程总览](#1-流程总览)
 2. [前置要求](#2-前置要求)
 3. [采集数据 `sample_rsd4xx.py`](#3-采集数据-sample_rsd4xxpy)
-4. [可视化检索 `ui.py`](#4-可视化检索-uipy)
-5. [远程服务器 / 跳板机可视化（Web 版 `ui_web.py`）](#45-远程服务器--跳板机可视化web-版-ui_webpy)
-6. [数据格式与坐标系约定](#5-数据格式与坐标系约定)
-7. [常见问题](#6-常见问题)
+4. [可视化检索 `ui.py`（Web 版）](#4-可视化检索-uipyweb-版)
+5. [数据格式与坐标系约定](#5-数据格式与坐标系约定)
+6. [常见问题](#6-常见问题)
 
 ---
 
@@ -48,14 +47,14 @@
 |---|---|
 | 相机 | Intel RealSense D4xx（D435 / D435i / D455 等） |
 | 采集依赖 | `pyrealsense2`（Linux x86_64 / Windows 有官方 wheel） |
-| UI 依赖 | Tkinter（Python 标准库）+ `Pillow`；三维显示用 `open3d` |
+| UI 依赖 | `gradio`（网页界面）+ `open3d`（导出三维点云供浏览器预览） |
 | 推理依赖 | 与评测相同：`torch` + `transformers` + NVIDIA GPU（建议显存 ≥ 24GB） |
-| 系统包(Ubuntu) | `python3-tk`、`libusb-1.0-0`、`libgl1`（`scripts/install.sh` 会自动尝试） |
+| 系统包(Ubuntu) | 一般无需（用 `opencv-python-headless`）；RealSense 采集需 `libusb-1.0-0` |
 
 安装（已并入主安装脚本，无需额外操作）：
 
 ```bash
-bash scripts/install.sh          # 含 pyrealsense2 / open3d / python3-tk
+bash scripts/install.sh          # 含 gradio / pyrealsense2 / open3d
 # 或在已有环境中只装 Python 依赖
 pip install -r requirements.txt
 ```
@@ -147,89 +146,56 @@ TUM RGB-D / NYU Depth V2 / Redwood），只要按
 
 ---
 
-## 4. 可视化检索 `ui.py`
+## 4. 可视化检索 `ui.py`（Web 版）
+
+`ui.py` 是一个**单文件 Web 应用**（基于 Gradio）。最简单的用法就是：
+SSH 到（有 GPU 的）服务器 → 运行它 → 浏览器打开终端里打印的网址。
 
 ```bash
 python ui.py --capture-dir ./captures
-# 指定显卡
-python ui.py --capture-dir ./captures --cuda-devices 0
+# 指定显卡 / 端口
+python ui.py --capture-dir ./captures --cuda-devices 0 --port 7860
 ```
 
-### 界面布局
+启动后终端会打印 `http://127.0.0.1:7860`，浏览器打开即可。
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│ 采集目录: [ ./captures            ] [选择] [刷新]              │
-├──────────────┬───────────────────────────────────────────────┤
-│ 样本列表      │                                               │
-│ rsd_..._01   │          [ 图像显示区：RGB / 叠加结果 ]        │
-│ rsd_..._02   │                                               │
-│ ...          │                                               │
-│              ├───────────────────────────────────────────────┤
-│              │ 查找物体: [ 水杯        ] [查找] [查看3D点云]   │
-│              ├───────────────────────────────────────────────┤
-│              │ 结果信息：2D bbox / 相机系 AABB / 世界系 AABB   │
-├──────────────┴───────────────────────────────────────────────┤
-│ 状态栏：就绪 / 加载模型 / 检索中 / 完成                        │
-└──────────────────────────────────────────────────────────────┘
-```
+### 检索方式：输入物体名，系统自动扫描全部样本
 
-### 操作流程
+**不需要手动选样本**。你只在输入框里写要找的东西（支持中文），点「检索全部样本」，
+系统会**遍历采集目录下的所有样本**，对每个样本跑
+**RynnBrain 定位 → SAM2 分割 → 深度反投影 + SOR 去噪 → AABB**，
+然后把**命中目标的样本**以图集（Gallery）形式返回：
 
-1. 左侧选择一个采集样本（自动显示该样本 RGB）。
-2. 在「查找物体」输入名称（**支持中文**，如 `水杯` / `键盘`），点「查找」或回车。
-3. 后台跑 **RynnBrain 定位 → SAM2 分割 → 深度反投影 + SOR 去噪 → AABB**：
-   - 图上叠加：**绿框 = 2D bbox**，**半透明蓝 = 目标掩码**；
-   - 右下信息区显示 **相机系 3D AABB** 与 **应用随机位姿后的世界系 3D AABB**（min / max / 尺寸）。
-4. 点「查看3D点云」用 Open3D 弹窗查看：场景点云 + **目标点云(红)** + **AABB(红框)**。
+1. 顶部输入「采集目录 + 查找物体」，点「检索全部样本」（或回车）；
+2. 进度条显示扫描进度，结束后概要给出「扫描 N 个 / 命中 M 个」；
+3. 图集展示所有命中样本（每张图叠加 **绿框 = 2D bbox**、**半透明蓝 = 掩码**，标题为样本号）；
+4. **点击图集中任意一张**，下方显示该样本的 **相机系 3D AABB** 与 **应用随机位姿后的世界系 3D AABB**（min / max / 尺寸），
+   以及可在浏览器内旋转缩放的 **3D 点云 + AABB（红框）**。
 
 ### 行为说明
 
-- **模型惰性加载**：首次点「查找」时才加载模型（自动下载到 `./models/`），稍慢；之后复用。
-- **后台线程推理**：界面不卡顿，状态栏实时显示进度。
-- **未找到目标**：若 RynnBrain 判定物体不存在或无法定位，会提示「未找到」，不画框。
-- 反投影 / 去噪参数与评测一致，保证结果可对照。
+- **纯浏览器渲染**，不依赖服务器显示 / X11 / 服务器 OpenGL；3D 点云用浏览器端 three.js 渲染。
+- **模型惰性加载**：第一次检索时才加载 RynnBrain + SAM2（自动下载到 `./models/`），之后复用。
+- 样本较多时，扫描是逐样本推理（每个约 1.5~3s），进度条会显示进度。
+- 未命中：若 RynnBrain 判定某样本不含该物体，则该样本不出现在结果里。
+- 反投影 / 去噪参数与评测一致（`SOR_NB=20, SOR_STD=0.75`），保证结果可对照。
 
----
+### 远程访问（SSH 端口转发）
 
-## 4.5 远程服务器 / 跳板机可视化（Web 版 `ui_web.py`）
-
-如果模型跑在**通过跳板机连接的无显示 GPU 服务器**上，桌面版 `ui.py`（Tkinter + Open3D）
-走 X11 转发通常很卡、且 Open3D 的 OpenGL 几乎无法经堡垒机转发。**推荐用 Web 版**：
-服务器起一个本地 Web 服务，你用 SSH 端口转发映射到本地，浏览器打开即可，
-**完全不依赖 X11 / 服务器显示 / 服务器 OpenGL**（3D 点云在你本地浏览器里用 three.js 渲染）。
-
-### 步骤
-
-1）服务器上启动（监听本地回环，最安全）：
+`ui.py` 默认 `--host 127.0.0.1`，直接 SSH 连服务器时，用端口转发把网页带回本地浏览器：
 
 ```bash
-python ui_web.py --capture-dir ./captures --port 7860
+# 在本地电脑执行（保持窗口开着）
+ssh -N -L 7860:localhost:7860 root@<服务器IP>
 ```
 
-2）本地做端口转发（一条命令穿透跳板机，`-J` 即 ProxyJump）：
+保持隧道窗口开着，本地浏览器打开 **http://localhost:7860**。
 
-```bash
-ssh -N -L 7860:localhost:7860 -J user@<跳板机> user@<GPU服务器>
-```
-
-> 多级跳板：`-J user@bastion1,user@bastion2`。
-> 若用 `~/.ssh/config` 配了 `ProxyJump`，直接 `ssh -N -L 7860:localhost:7860 <GPU服务器别名>`。
-
-3）本地浏览器打开 **http://localhost:7860**，操作与桌面版一致：选样本 → 输入物体 → 查找。
-   - 2D 叠加（绿框 bbox + 半透明蓝掩码）直接出图；
-   - 「3D 点云 + AABB」面板在浏览器里可旋转缩放（场景点云 + 目标点云红 + AABB 红框）。
-
-### 对比
-
-| | `ui.py`（桌面/Tkinter） | `ui_web.py`（浏览器/Gradio） |
-|---|---|---|
-| 适用 | 本地有显示器 / 直连有桌面的机器 | 跳板机 + 无显示远程服务器 ✅ |
-| 依赖 | Tkinter（标准库）+ open3d | gradio（+ open3d 仅用于导出 3D 预览） |
-| 3D 显示 | 服务器弹 Open3D 窗口（需本地显示/GL） | 本地浏览器 three.js 渲染，无需服务器 GL |
-
-> 安全建议：默认 `--host 127.0.0.1`，只能本机访问，靠 SSH 转发暴露给你自己最安全。
-> 不要随意用 `--host 0.0.0.0` 或 `--share` 把服务直接挂到公网。
+> 若本地能直接访问服务器 IP，也可在服务器上用 `--host 0.0.0.0` 启动，
+> 然后浏览器直接开 `http://<服务器IP>:7860`（需放开防火墙/安全组的该端口；
+> `0.0.0.0` 会暴露给所有能访问该 IP 的人，内网可控再用）。
+>
+> 启动时 `ui.py` 会自动把 localhost 加入 `no_proxy`，避免代理拦截本地自检请求导致 503。
 
 ---
 
@@ -285,31 +251,40 @@ sudo apt-get install -y libusb-1.0-0
 ```
 并确认相机插在 **USB 3.0** 口、未被其它程序（如 realsense-viewer）占用。
 
-### Q3: `ui.py` 报 `No module named _tkinter`
+### Q3: `ui.py` 报 `No module named gradio`
 
-系统 Python 缺 Tk：
 ```bash
-sudo apt-get install -y python3-tk
+pip install gradio
 ```
-（conda 环境通常自带 Tkinter；`scripts/install.sh` 已尝试自动安装。）
 
-### Q4: 「查看3D点云」没反应 / 报 open3d 错误
+### Q4: 浏览器打不开网址 / `ui.py` 启动报 503
 
+- 503 通常是服务器设了 `http_proxy/https_proxy`，本地自检请求被代理拦截。
+  `ui.py` 启动时已自动把 localhost 加入 `no_proxy`；若仍报错，手动执行：
+  ```bash
+  export no_proxy="localhost,127.0.0.1,::1"; export NO_PROXY="localhost,127.0.0.1,::1"
+  ```
+- 远程访问要做 SSH 端口转发：`ssh -N -L 7860:localhost:7860 root@<服务器IP>`，
+  再打开本地 `http://localhost:7860`。
+
+### Q5: 「3D 点云 + AABB」面板空白 / 没有三维
+
+三维点云需要 `open3d` 导出 `.ply`：
 ```bash
 pip install open3d
 ```
-无显示环境（纯 SSH 无 X11）下，Open3D 窗口无法弹出；请在带桌面或 X11 转发的环境运行，
-或只看 UI 信息区里的 AABB 数值。
+缺失时仍可正常看 2D 叠加图与 AABB 数值，只是没有三维预览。
 
-### Q5: 检索很慢 / 第一次卡住
+### Q6: 检索很慢 / 第一次卡住
 
 首次检索会**下载并加载** RynnBrain-8B(~16GB) + SAM2(~200MB)。可先预热：
 ```bash
 python scripts/download_models.py
 ```
-推理需要 NVIDIA GPU；CPU 上会非常慢甚至 OOM。
+推理需要 NVIDIA GPU；CPU 上会非常慢甚至 OOM。另外「检索全部样本」是逐样本推理，
+样本越多越慢（每个约 1.5~3s），属正常现象，进度条会显示进度。
 
-### Q6: 这些采集样本能用 `main.py` 评测吗？
+### Q7: 这些采集样本能用 `main.py` 评测吗？
 
 不能直接评测。采集样本用**随机模拟 `pose.json`** 取代了评测集的 GT `aabb.json`，
 没有 3D 真值，因此不参与「3D IoU 准确率」评测；它服务于本文档的交互检索可视化。

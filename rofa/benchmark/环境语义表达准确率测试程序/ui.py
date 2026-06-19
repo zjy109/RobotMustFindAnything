@@ -1,30 +1,25 @@
 #!/usr/bin/env python3
-"""采集数据可视化检索 UI。
+"""环境语义检索 UI（Web 版，单文件）。
 
-读取 `sample_rsd4xx.py` 采集的样本，输入要查找的物体名称，调用
-RynnBrain（定位）+ SAM2（分割）+ 深度反投影流水线，在界面上可视化：
+使用方式很简单：
+    1. SSH 到（有 GPU 的）服务器
+    2. 运行：python ui.py --capture-dir ./captures
+    3. 浏览器打开终端里打印的网址（默认 http://127.0.0.1:7860）
 
-    - 目标 2D bbox（绿框）
-    - 目标掩码（半透明蓝色叠加）
-    - 由掩码 + 深度反投影得到的相机系 3D AABB
-    - 应用样本随机位姿后的世界系 3D AABB
-    - （可选）点云 + AABB 的 Open3D 三维窗口
+检索逻辑：
+    用户只输入"要查找的物体名称"，**系统自动扫描采集目录下的所有样本**，
+    用 RynnBrain 定位 + SAM2 分割 + 深度反投影，把命中的样本以图集形式返回；
+    点击任意命中结果即可查看其 2D bbox / 掩码 / 相机系 & 世界系 3D AABB，
+    以及（可选）浏览器内的三维点云 + AABB。
 
-用法：
-    python ui.py --capture-dir ./captures
-    python ui.py --capture-dir ./captures --cuda-devices 0
-
-说明：
-    - 模型在首次检索时惰性加载（与评测程序共用 model_resolver，自动下载到 ./models/）。
-    - 推理在后台线程进行，不阻塞界面。
+依赖：gradio；三维点云预览还需 open3d。
 """
 from __future__ import annotations
 
 import argparse
-import queue
+import os
 import sys
-import threading
-import traceback
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -46,7 +41,7 @@ from benchmark.viz import render_overlay  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# 模型封装（惰性加载，供 UI 后台线程使用）
+# 模型封装（惰性加载）
 # ---------------------------------------------------------------------------
 
 class Pipeline:
@@ -57,7 +52,7 @@ class Pipeline:
         self.rynn = None
         self.sam2 = None
 
-    def ensure_loaded(self, log) -> None:
+    def ensure_loaded(self, log=print) -> None:
         if self.rynn is not None and self.sam2 is not None:
             return
         from benchmark.model_resolver import ensure_rynnbrain, ensure_sam2
@@ -78,8 +73,8 @@ class Pipeline:
         self.sam2 = SAM2Segmenter(model_path=str(sam2_path))
         log("模型加载完成。")
 
-    def infer(self, bundle: Dict[str, Any], target: str, log) -> Dict[str, Any]:
-        """对单个样本检索 target，返回可视化所需的中间结果。"""
+    def infer(self, bundle: Dict[str, Any], target: str, log=print) -> Dict[str, Any]:
+        """对单个样本检索 target，返回中间结果（found / bbox / mask / aabb）。"""
         self.ensure_loaded(log)
 
         rgb_img = bundle["rgb_img"]
@@ -87,20 +82,15 @@ class Pipeline:
         intrinsics = bundle["intrinsics"]
         W, H = bundle["img_width"], bundle["img_height"]
 
-        log(f"RynnBrain 定位 '{target}' ...")
         bbox_norm = self.rynn.detect(rgb_img, target)
         if bbox_norm is None:
             return {"found": False}
 
         pred_2d = denormalize_bbox(bbox_norm, W, H)
-        log("SAM2 分割 ...")
         mask = self.sam2.segment(rgb_img, pred_2d)
 
-        log("深度反投影 + SOR 去噪 -> AABB ...")
         aabb_cam = mask_to_3d_aabb(depth_map, mask, intrinsics, SOR_NB, SOR_STD)
-        aabb_world = None
-        if aabb_cam is not None:
-            aabb_world = transform_aabb(aabb_cam, bundle["pose_matrix"])
+        aabb_world = transform_aabb(aabb_cam, bundle["pose_matrix"]) if aabb_cam else None
 
         return {
             "found": True,
@@ -112,325 +102,234 @@ class Pipeline:
 
 
 # ---------------------------------------------------------------------------
-# Open3D 三维显示（可选）
+# 可视化工具
 # ---------------------------------------------------------------------------
 
-def show_point_cloud(bundle: Dict[str, Any], mask: np.ndarray,
-                     aabb_cam: Optional[List[float]]) -> None:
-    """在 Open3D 窗口展示场景点云 + 目标 AABB（红框）。"""
+def fmt_aabb(name: str, aabb: Optional[List[float]]) -> str:
+    if aabb is None:
+        return f"{name}: 无（点云为空 / 深度无效）"
+    mn, mx = aabb[:3], aabb[3:]
+    ext = [mx[i] - mn[i] for i in range(3)]
+    return (
+        f"{name}:\n"
+        f"  min  = [{mn[0]:.3f}, {mn[1]:.3f}, {mn[2]:.3f}] m\n"
+        f"  max  = [{mx[0]:.3f}, {mx[1]:.3f}, {mx[2]:.3f}] m\n"
+        f"  尺寸 = [{ext[0]:.3f}, {ext[1]:.3f}, {ext[2]:.3f}] m"
+    )
+
+
+def _sample_aabb_edges(aabb: List[float], n_per_edge: int = 40) -> np.ndarray:
+    """沿 AABB 的 12 条棱采点，用于在点云里把包围盒画成红色"线"。"""
+    mn = np.array(aabb[:3]); mx = np.array(aabb[3:])
+    c = np.array([
+        [mn[0], mn[1], mn[2]], [mx[0], mn[1], mn[2]],
+        [mx[0], mx[1], mn[2]], [mn[0], mx[1], mn[2]],
+        [mn[0], mn[1], mx[2]], [mx[0], mn[1], mx[2]],
+        [mx[0], mx[1], mx[2]], [mn[0], mx[1], mx[2]],
+    ])
+    edges = [(0, 1), (1, 2), (2, 3), (3, 0),
+             (4, 5), (5, 6), (6, 7), (7, 4),
+             (0, 4), (1, 5), (2, 6), (3, 7)]
+    pts, ts = [], np.linspace(0, 1, n_per_edge)[:, None]
+    for a, b in edges:
+        pts.append(c[a][None, :] * (1 - ts) + c[b][None, :] * ts)
+    return np.concatenate(pts, axis=0)
+
+
+def export_ply(bundle: Dict[str, Any], mask: np.ndarray,
+               aabb_cam: Optional[List[float]]) -> Optional[str]:
+    """导出 场景点云 + 目标点云(红) + AABB红框 为 .ply，供浏览器三维预览。"""
     try:
         import open3d as o3d
     except ImportError:
-        raise RuntimeError("未安装 open3d，无法显示三维点云：pip install open3d")
+        return None
 
     rgb = np.array(bundle["rgb_img"])
     depth_map = bundle["depth_map"]
     intrinsics = bundle["intrinsics"]
 
-    # 场景点云（下采样）+ 目标点云（原分辨率）
-    scene_pts, scene_col = depth_to_points(depth_map, intrinsics, rgb=rgb, stride=2)
+    scene_pts, scene_col = depth_to_points(depth_map, intrinsics, rgb=rgb, stride=3)
     obj_pts, _ = depth_to_points(depth_map, intrinsics, mask=mask)
 
-    geoms = []
+    pts_list, col_list = [], []
     if len(scene_pts) > 0:
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(scene_pts)
-        if scene_col is not None:
-            pcd.colors = o3d.utility.Vector3dVector(scene_col)
-        geoms.append(pcd)
+        pts_list.append(scene_pts)
+        col_list.append(scene_col if scene_col is not None
+                        else np.full((len(scene_pts), 3), 0.6, np.float32))
     if len(obj_pts) > 0:
-        opcd = o3d.geometry.PointCloud()
-        opcd.points = o3d.utility.Vector3dVector(obj_pts)
-        opcd.paint_uniform_color([1.0, 0.2, 0.2])
-        geoms.append(opcd)
+        pts_list.append(obj_pts)
+        col_list.append(np.tile([1.0, 0.2, 0.2], (len(obj_pts), 1)))
     if aabb_cam is not None:
-        box = o3d.geometry.AxisAlignedBoundingBox(
-            min_bound=np.array(aabb_cam[:3]), max_bound=np.array(aabb_cam[3:]),
-        )
-        box.color = (1.0, 0.0, 0.0)
-        geoms.append(box)
+        edge = _sample_aabb_edges(aabb_cam)
+        pts_list.append(edge.astype(np.float32))
+        col_list.append(np.tile([1.0, 0.0, 0.0], (len(edge), 1)))
 
-    if not geoms:
-        raise RuntimeError("没有可显示的有效点（深度全为 0？）")
-    o3d.visualization.draw_geometries(geoms, window_name="点云 + 目标 AABB")
+    if not pts_list:
+        return None
+
+    P = np.concatenate(pts_list).astype(np.float64)
+    C = np.concatenate(col_list).astype(np.float64)
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(P)
+    pcd.colors = o3d.utility.Vector3dVector(np.clip(C, 0, 1))
+    out = Path(tempfile.gettempdir()) / f"pcd_{bundle.get('sample_id', 'x')}.ply"
+    o3d.io.write_point_cloud(str(out), pcd)
+    return str(out)
 
 
 # ---------------------------------------------------------------------------
-# Tkinter UI
+# Gradio 应用
 # ---------------------------------------------------------------------------
 
-def run_ui(capture_dir: Path, cuda_devices: str) -> int:
-    import tkinter as tk
-    from tkinter import filedialog, messagebox, ttk
-
-    from PIL import Image, ImageTk
+def build_app(capture_dir: Path, cuda_devices: str):
+    import gradio as gr
 
     pipeline = Pipeline(cuda_devices=cuda_devices)
-    msg_queue: "queue.Queue[tuple]" = queue.Queue()
+    state: Dict[str, Any] = {"capture_dir": capture_dir, "matches": []}
 
-    state: Dict[str, Any] = {
-        "capture_dir": capture_dir,
-        "records": [],
-        "bundle": None,      # 当前样本
-        "result": None,      # 最近一次推理结果
-        "busy": False,
-        "photo": None,       # 防止 PhotoImage 被 GC
-    }
-
-    root = tk.Tk()
-    root.title("环境语义检索 UI — 采集数据可视化")
-    root.geometry("1180x720")
-
-    # ===== 顶部：采集目录 =====
-    top = ttk.Frame(root, padding=8)
-    top.pack(side=tk.TOP, fill=tk.X)
-    ttk.Label(top, text="采集目录:").pack(side=tk.LEFT)
-    dir_var = tk.StringVar(value=str(capture_dir))
-    dir_entry = ttk.Entry(top, textvariable=dir_var, width=70)
-    dir_entry.pack(side=tk.LEFT, padx=4)
-
-    def choose_dir() -> None:
-        d = filedialog.askdirectory(initialdir=dir_var.get() or ".")
-        if d:
-            dir_var.set(d)
-            reload_index()
-
-    ttk.Button(top, text="选择", command=choose_dir).pack(side=tk.LEFT, padx=2)
-    ttk.Button(top, text="刷新", command=lambda: reload_index()).pack(side=tk.LEFT, padx=2)
-
-    # ===== 主体：左列表 / 右画布 =====
-    body = ttk.Frame(root, padding=8)
-    body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-
-    left = ttk.Frame(body)
-    left.pack(side=tk.LEFT, fill=tk.Y)
-    ttk.Label(left, text="样本列表").pack(anchor=tk.W)
-    listbox = tk.Listbox(left, width=28, height=28, exportselection=False)
-    listbox.pack(side=tk.LEFT, fill=tk.Y)
-    lb_scroll = ttk.Scrollbar(left, orient=tk.VERTICAL, command=listbox.yview)
-    lb_scroll.pack(side=tk.LEFT, fill=tk.Y)
-    listbox.config(yscrollcommand=lb_scroll.set)
-
-    right = ttk.Frame(body, padding=(10, 0))
-    right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-    canvas = tk.Label(right, background="#222", anchor=tk.CENTER)
-    canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-
-    # ===== 检索栏 =====
-    query_bar = ttk.Frame(right)
-    query_bar.pack(side=tk.TOP, fill=tk.X, pady=(8, 0))
-    ttk.Label(query_bar, text="查找物体:").pack(side=tk.LEFT)
-    query_var = tk.StringVar()
-    query_entry = ttk.Entry(query_bar, textvariable=query_var, width=30)
-    query_entry.pack(side=tk.LEFT, padx=4)
-    search_btn = ttk.Button(query_bar, text="查找")
-    search_btn.pack(side=tk.LEFT, padx=2)
-    view3d_btn = ttk.Button(query_bar, text="查看3D点云")
-    view3d_btn.pack(side=tk.LEFT, padx=2)
-
-    # ===== 结果信息 =====
-    info = tk.Text(right, height=8, wrap=tk.WORD)
-    info.pack(side=tk.TOP, fill=tk.X, pady=(8, 0))
-
-    status_var = tk.StringVar(value="就绪。请选择左侧样本并输入要查找的物体。")
-    status_bar = ttk.Label(root, textvariable=status_var, relief=tk.SUNKEN, anchor=tk.W)
-    status_bar.pack(side=tk.BOTTOM, fill=tk.X)
-
-    # ---- 工具函数 ----
-    def set_status(text: str) -> None:
-        status_var.set(text)
-
-    def set_info(text: str) -> None:
-        info.delete("1.0", tk.END)
-        info.insert(tk.END, text)
-
-    def display_image(rgb_arr_or_pil) -> None:
-        if isinstance(rgb_arr_or_pil, np.ndarray):
-            img = Image.fromarray(rgb_arr_or_pil)
-        else:
-            img = rgb_arr_or_pil
-        cw = max(canvas.winfo_width(), 320)
-        ch = max(canvas.winfo_height(), 240)
-        disp = img.copy()
-        disp.thumbnail((cw, ch))
-        photo = ImageTk.PhotoImage(disp)
-        state["photo"] = photo
-        canvas.configure(image=photo)
-
-    def fmt_aabb(name: str, aabb: Optional[List[float]]) -> str:
-        if aabb is None:
-            return f"{name}: 无（点云为空 / 深度无效）"
-        mn = aabb[:3]
-        mx = aabb[3:]
-        ext = [mx[i] - mn[i] for i in range(3)]
-        return (
-            f"{name}:\n"
-            f"  min = [{mn[0]:.3f}, {mn[1]:.3f}, {mn[2]:.3f}] m\n"
-            f"  max = [{mx[0]:.3f}, {mx[1]:.3f}, {mx[2]:.3f}] m\n"
-            f"  尺寸 = [{ext[0]:.3f}, {ext[1]:.3f}, {ext[2]:.3f}] m"
-        )
-
-    # ---- 索引加载 / 样本选择 ----
-    def reload_index() -> None:
-        cdir = Path(dir_var.get()).expanduser().resolve()
+    def search_all(cdir_str: str, target: str, progress=gr.Progress()):
+        """扫描采集目录下所有样本，返回命中目标的样本图集 + 概要。"""
+        cdir = Path(cdir_str).expanduser().resolve()
         state["capture_dir"] = cdir
-        records = load_index(cdir)
-        state["records"] = records
-        listbox.delete(0, tk.END)
-        for r in records:
-            listbox.insert(tk.END, r.get("sample_id", "?"))
-        if records:
-            set_status(f"已加载 {len(records)} 个样本：{cdir}")
-            listbox.selection_clear(0, tk.END)
-            listbox.selection_set(0)
-            on_select()
-        else:
-            set_status(f"目录中没有样本（缺 samples.json）：{cdir}")
-            canvas.configure(image="")
-            state["photo"] = None
-            set_info("")
+        state["matches"] = []
 
-    def current_record() -> Optional[Dict[str, Any]]:
-        sel = listbox.curselection()
-        if not sel:
-            return None
-        return state["records"][sel[0]]
-
-    def on_select(_evt=None) -> None:
-        rec = current_record()
-        if rec is None:
-            return
-        bundle = load_capture_sample(state["capture_dir"], rec)
-        if bundle is None:
-            set_status(f"样本文件缺失：{rec.get('sample_id')}")
-            return
-        state["bundle"] = bundle
-        state["result"] = None
-        display_image(bundle["rgb_img"])
-        pose = bundle.get("pose") or {}
-        t = pose.get("translation")
-        set_info(
-            f"样本: {bundle['sample_id']}\n"
-            f"分辨率: {bundle['img_width']}x{bundle['img_height']}\n"
-            f"随机位姿平移: {t}\n"
-            "（输入物体名称后点『查找』）"
-        )
-        set_status(f"已选择样本 {bundle['sample_id']}")
-
-    listbox.bind("<<ListboxSelect>>", on_select)
-
-    # ---- 检索（后台线程） ----
-    def do_search() -> None:
-        if state["busy"]:
-            return
-        bundle = state["bundle"]
-        if bundle is None:
-            messagebox.showwarning("提示", "请先在左侧选择一个样本。")
-            return
-        target = query_var.get().strip()
+        target = (target or "").strip()
         if not target:
-            messagebox.showwarning("提示", "请输入要查找的物体名称。")
-            return
+            return [], "请输入要查找的物体名称。"
 
-        state["busy"] = True
-        search_btn.config(state=tk.DISABLED)
+        records = load_index(cdir)
+        if not records:
+            return [], f"目录中没有样本（缺 samples.json）：{cdir}"
 
-        def worker() -> None:
-            try:
-                res = pipeline.infer(
-                    bundle, target,
-                    log=lambda m: msg_queue.put(("status", m)),
-                )
-                msg_queue.put(("result", {"bundle": bundle, "target": target, "res": res}))
-            except Exception as exc:  # noqa: BLE001
-                msg_queue.put(("error", f"{exc}\n{traceback.format_exc()}"))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def do_view3d() -> None:
-        bundle = state["bundle"]
-        result = state["result"]
-        if bundle is None or result is None or not result.get("found"):
-            messagebox.showinfo("提示", "请先成功检索出一个目标，再查看三维点云。")
-            return
-
-        def worker() -> None:
-            try:
-                show_point_cloud(bundle, result["mask"], result["aabb_cam"])
-            except Exception as exc:  # noqa: BLE001
-                msg_queue.put(("error", str(exc)))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    search_btn.config(command=do_search)
-    view3d_btn.config(command=do_view3d)
-    query_entry.bind("<Return>", lambda e: do_search())
-
-    # ---- 处理后台线程消息 ----
-    def poll_queue() -> None:
+        # 先把模型加载好，再逐样本推理（这样进度条只反映扫描进度）
+        progress(0, desc="加载模型 ...")
         try:
-            while True:
-                kind, payload = msg_queue.get_nowait()
-                if kind == "status":
-                    set_status(payload)
-                elif kind == "error":
-                    state["busy"] = False
-                    search_btn.config(state=tk.NORMAL)
-                    set_status("出错")
-                    messagebox.showerror("错误", payload)
-                elif kind == "result":
-                    state["busy"] = False
-                    search_btn.config(state=tk.NORMAL)
-                    _on_result(payload)
-        except queue.Empty:
-            pass
-        root.after(100, poll_queue)
+            pipeline.ensure_loaded(log=print)
+        except Exception as exc:  # noqa: BLE001
+            return [], f"模型加载失败：{exc}"
 
-    def _on_result(payload: Dict[str, Any]) -> None:
-        bundle = payload["bundle"]
-        target = payload["target"]
-        res = payload["res"]
-        state["result"] = res
+        gallery, matches = [], []
+        scanned = 0
+        for r in progress.tqdm(records, desc=f"检索『{target}』"):
+            b = load_capture_sample(cdir, r)
+            if b is None:
+                continue
+            scanned += 1
+            try:
+                res = pipeline.infer(b, target, log=lambda *_: None)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[ui] 样本 {r.get('sample_id')} 推理出错: {exc}")
+                continue
+            if not res.get("found"):
+                continue
 
-        if not res.get("found"):
-            display_image(bundle["rgb_img"])
-            set_info(f"目标『{target}』未在图中找到（RynnBrain 判定不存在 / 无法定位）。")
-            set_status("未找到目标")
-            return
+            overlay = render_overlay(
+                np.array(b["rgb_img"]), res["pred_2d"], res["mask"],
+                gt_2d_bbox=None, label=target, mask_alpha=0.5,
+            )
+            overlay_rgb = np.ascontiguousarray(overlay[:, :, ::-1])
+            sid = b["sample_id"]
+            gallery.append((overlay_rgb, sid))
+            matches.append({"sample_id": sid, "bundle": b, "res": res})
 
-        overlay_bgr = render_overlay(
-            np.array(bundle["rgb_img"]),
-            res["pred_2d"], res["mask"], gt_2d_bbox=None,
-            label=f"{target}", mask_alpha=0.5,
+        state["matches"] = matches
+        summary = (
+            f"已扫描 {scanned} 个样本，命中『{target}』的有 **{len(matches)}** 个。\n\n"
+            + ("点击下方任意结果查看 3D AABB 与点云。" if matches
+               else "没有任何样本包含该物体（RynnBrain 判定不存在 / 无法定位）。")
         )
-        overlay_rgb = overlay_bgr[:, :, ::-1]  # BGR -> RGB
-        display_image(np.ascontiguousarray(overlay_rgb))
+        return gallery, summary
 
-        set_info(
-            f"目标: {target}\n"
+    def on_select(evt: gr.SelectData):
+        """点击图集某个命中结果 -> 显示其 AABB 信息 + 三维点云。"""
+        matches = state.get("matches", [])
+        if evt.index is None or evt.index >= len(matches):
+            return "未选中有效结果。", None
+        m = matches[evt.index]
+        b, res = m["bundle"], m["res"]
+        info = (
+            f"样本: {m['sample_id']}\n"
             f"2D bbox(px): {res['pred_2d']}\n\n"
             + fmt_aabb("相机系 3D AABB", res["aabb_cam"]) + "\n\n"
             + fmt_aabb("世界系 3D AABB(已应用随机位姿)", res["aabb_world"])
         )
-        set_status("检索完成。可点『查看3D点云』查看三维结果。")
+        ply = export_ply(b, res["mask"], res["aabb_cam"])
+        if ply is None:
+            info += "\n\n（未安装 open3d，跳过三维点云导出）"
+        return info, ply
 
-    # 启动
-    reload_index()
-    root.after(100, poll_queue)
-    root.mainloop()
-    return 0
+    with gr.Blocks(title="环境语义检索 UI") as demo:
+        gr.Markdown(
+            "## 环境语义检索 UI\n"
+            "输入要查找的物体，系统会**自动扫描采集目录下的所有样本**并返回命中的结果。"
+        )
+        with gr.Row():
+            cdir_box = gr.Textbox(value=str(capture_dir), label="采集目录", scale=3)
+            query_box = gr.Textbox(label="查找物体（支持中文）",
+                                   placeholder="例如：水杯 / 键盘 / 椅子", scale=3)
+            search_btn = gr.Button("检索全部样本", variant="primary", scale=1)
+
+        summary = gr.Markdown()
+        gallery = gr.Gallery(label="命中的样本（绿框=bbox，蓝=掩码）",
+                             columns=4, height=420, object_fit="contain",
+                             allow_preview=True)
+
+        with gr.Row():
+            detail = gr.Textbox(label="所选样本的 3D AABB 信息", lines=10, scale=1)
+            model3d = gr.Model3D(label="3D 点云 + AABB（红框）",
+                                 clear_color=[0, 0, 0, 1], scale=1)
+
+        search_btn.click(search_all, inputs=[cdir_box, query_box],
+                         outputs=[gallery, summary])
+        query_box.submit(search_all, inputs=[cdir_box, query_box],
+                         outputs=[gallery, summary])
+        gallery.select(on_select, inputs=None, outputs=[detail, model3d])
+
+    return demo
+
+
+# ---------------------------------------------------------------------------
+# 启动
+# ---------------------------------------------------------------------------
+
+def _ensure_localhost_no_proxy(host: str) -> None:
+    """让本机地址绕过 HTTP 代理，避免 gradio 启动自检请求被代理拦截而 503。"""
+    targets = {"localhost", "127.0.0.1", "::1", host}
+    for var in ("no_proxy", "NO_PROXY"):
+        items = [s.strip() for s in os.environ.get(var, "").split(",") if s.strip()]
+        for t in targets:
+            if t and t not in items:
+                items.append(t)
+        os.environ[var] = ",".join(items)
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="采集数据可视化检索 UI")
+    ap = argparse.ArgumentParser(description="环境语义检索 UI（Web 版）")
     ap.add_argument("--capture-dir", type=str, default="./captures",
                     help="sample_rsd4xx.py 的采集输出目录（默认 ./captures）")
     ap.add_argument("--cuda-devices", type=str, default="0",
                     help="CUDA_VISIBLE_DEVICES（默认 0）")
+    ap.add_argument("--host", type=str, default="127.0.0.1",
+                    help="监听地址（默认 127.0.0.1；如需局域网直接访问可设 0.0.0.0）")
+    ap.add_argument("--port", type=int, default=7860, help="监听端口（默认 7860）")
+    ap.add_argument("--share", action="store_true",
+                    help="生成 gradio 公网临时链接（需外网，一般用不到）")
     args = ap.parse_args()
+
+    try:
+        import gradio  # noqa: F401
+    except ImportError:
+        print("[error] 未安装 gradio。请先安装：pip install gradio", file=sys.stderr)
+        return 2
+
+    _ensure_localhost_no_proxy(args.host)
+
     capture_dir = Path(args.capture_dir).expanduser().resolve()
-    return run_ui(capture_dir, args.cuda_devices)
+    demo = build_app(capture_dir, args.cuda_devices)
+    print(f"[ui] 启动 Web 服务: http://{args.host}:{args.port}")
+    print("[ui] 在浏览器打开上面的网址即可使用。")
+    demo.launch(server_name=args.host, server_port=args.port, share=args.share)
+    return 0
 
 
 if __name__ == "__main__":

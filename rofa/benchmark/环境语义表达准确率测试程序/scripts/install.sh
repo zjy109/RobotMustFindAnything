@@ -62,16 +62,15 @@ cd "$PROJECT_ROOT"
 log "${BOLD}[1/4] 系统级依赖（可选 — 如果没有 sudo 权限会跳过）${RESET}"
 if command -v apt-get &>/dev/null && [[ $EUID -eq 0 || -n "${SUDO_USER:-}" ]]; then
     sudo apt-get update -y || true
-    # python3-tk: ui.py 的 Tkinter 界面需要；libusb-1.0-0: RealSense 采集需要
+    # libusb-1.0-0: RealSense 采集需要；其余为常见运行库
     sudo apt-get install -y --no-install-recommends \
         build-essential libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
-        python3-tk libusb-1.0-0 \
+        libusb-1.0-0 \
         wget curl ca-certificates git || warn "apt-get 部分失败，但通常不致命"
 else
     warn "  非 root 或 apt-get 不可用，跳过系统包安装。"
     warn "  本项目用 opencv-python-headless，无头服务器通常无需任何系统库即可运行。"
     warn "  若仍报 'libGL.so.1' 之类错：sudo apt-get install -y libgl1 libglib2.0-0"
-    warn "  如果 ui.py(桌面版) 报 'No module named _tkinter'：sudo apt-get install -y python3-tk"
     warn "  如果 RealSense 采集报 USB/libusb 相关错：sudo apt-get install -y libusb-1.0-0"
 fi
 
